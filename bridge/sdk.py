@@ -350,10 +350,10 @@ class BetterSIPClient:
         """*** FIXED: Initiate a call with duplicate prevention ***"""
         # CRITICAL: Prevent duplicate INVITE requests
         if self.invite_in_progress:
-                return
+            return
             
-        if self.call_id:
-                return
+        if self.call_id and self.call_state != CallState.IDLE:
+            return
         
         # Generate unique call identifiers
         self.call_id = f"{random.randint(100000, 999999)}@{self.local_ip}"
@@ -366,6 +366,9 @@ class BetterSIPClient:
         # Mark INVITE as in progress
         self.invite_in_progress = True
         self.sent_invites.add(invite_key)
+        
+        # Track when we last sent an INVITE to prevent rapid retries
+        self.last_invite_time = datetime.now()
         
         branch = self._generate_branch()
         sdp_body = self._generate_sdp_offer()
@@ -567,6 +570,9 @@ class BetterSIPClient:
             try:
                 data, addr = self.sock.recvfrom(4096)
                 message = data.decode()
+                # Log all SIP messages for debugging
+                first_line = message.split('\r\n')[0] if message else ''
+                self.logger.info(f"📥 SIP MESSAGE: {first_line}")
                 self._handle_message(message)
             except socket.timeout:
                 self._handle_timeouts()
@@ -596,13 +602,22 @@ class BetterSIPClient:
                 transaction = self.current_transactions[call_id]
                 if 'invite_key' in transaction:
                     self.sent_invites.discard(transaction['invite_key'])
-                del self.current_transactions[call_id]
+                # Don't delete transaction if we're in RINGING - we need it for 200 OK
+                if self.call_state == CallState.INVITING:
+                    del self.current_transactions[call_id]
+                else:
+                    # Just stop retransmissions but keep transaction for 200 OK
+                    transaction['retries'] = 999  # Prevent further retries
             
-            # Reset invite in progress flag
-            self.invite_in_progress = False
-            self.call_id = None
-            self.call_state = CallState.IDLE
-            self.logger.info(f"❌ CALL STATUS: IDLE - 491 Request Pending, call reset")
+            # Don't reset call state if we're already ringing - just stop retransmissions
+            if self.call_state == CallState.INVITING:
+                self.invite_in_progress = False
+                self.call_id = None
+                self.call_state = CallState.IDLE
+                self.logger.info(f"❌ CALL STATUS: IDLE - 491 Request Pending, call reset")
+            else:
+                # We're in ringing/connected state - just acknowledge 491 but keep the call
+                self.logger.info(f"⚠️  491 Request Pending acknowledged - maintaining call state {self.call_state.value}")
             return
         
         # Handle other messages
@@ -683,6 +698,7 @@ class BetterSIPClient:
         """*** ENHANCED: 200 OK handling with invite state management ***"""
         call_id = headers.get('call-id', '')
         cseq_header = headers.get('cseq', '')
+        self.logger.info(f"✅ 200 OK received - Call-ID: {call_id}, CSeq: {cseq_header}")
         
         if not call_id or not cseq_header:
             return
@@ -710,6 +726,22 @@ class BetterSIPClient:
                 
             # Clean up completed transaction
             del self.current_transactions[call_id]
+        else:
+            self.logger.error(f"❌ No matching transaction found for Call-ID: {call_id}")
+            # Still try to handle 200 OK even without transaction if it's for our current call
+            if call_id == self.call_id and cseq_method == 'INVITE':
+                self.logger.info(f"🔧 Handling 200 OK without transaction for current call")
+                # Parse SDP answer from 200 OK
+                if 'body' in headers:
+                    self._parse_sdp_answer(headers['body'])
+                
+                # Send ACK to complete call setup
+                self.send_ack(headers)
+                
+                # Clear invite in progress flag on successful call setup
+                self.invite_in_progress = False
+                self.call_state = CallState.CONNECTED
+                self.logger.info(f"✅ CALL STATUS: CONNECTED - Call established successfully")
 
     def _handle_incoming_invite(self, message, headers):
         """Enhanced incoming INVITE handling"""
@@ -791,6 +823,11 @@ class BetterSIPClient:
                     transaction['retries'] = i + 1
                     
                     if transaction['type'] == 'INVITE':
+                        # Don't retransmit INVITE if we've received provisional responses (180 Ringing)
+                        # or if call is already in RINGING or later state
+                        if self.call_state in [CallState.RINGING, CallState.CONNECTED, CallState.STREAMING]:
+                            continue  # Stop retransmissions once we get ringing
+                            
                         # Don't retransmit if we already have auth info or if invite is in progress
                         if not self.auth_info and not self.invite_in_progress:
                             # Clear previous tracking before retry
