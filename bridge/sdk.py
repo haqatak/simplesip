@@ -42,6 +42,10 @@ class BetterSIPClient:
         self.local_ip = None
         self.call_state = CallState.IDLE
         
+        # Audio callback system
+        self.audio_received_callback = None
+        self.audio_callback_format = 'pcmu'  # 'pcmu' or 'pcm'
+        
         # *** CRITICAL 491 FIXES ***
         # Track sent requests to prevent duplicates
         self.sent_invites = set()
@@ -319,9 +323,9 @@ class BetterSIPClient:
                     if self.call_state == CallState.CONNECTED:
                         self.call_state = CallState.STREAMING
                         self.logger.info(f"🎙️ CALL STATUS: STREAMING - Audio stream started")
-                    self.logger.info(f"RTP packet received: {len(payload)} bytes from {addr}")
-                elif len(data) > 0:
-                    self.logger.info(f"Short RTP packet received: {len(data)} bytes from {addr}")
+                    # self.logger.info(f"RTP packet received: {len(payload)} bytes from {addr}")
+                # elif len(data) > 0:
+                    # self.logger.info(f"Short RTP packet received: {len(data)} bytes from {addr}")
             except socket.timeout:
                 # Try to receive any packet, even if it's not from expected source
                 try:
@@ -349,13 +353,78 @@ class BetterSIPClient:
                 time.sleep(0.1)
                 
     def _audio_processing_thread(self):
-        """Thread to process incoming audio data"""
+        """Thread to process incoming audio data and trigger callbacks"""
         while self.running:
             if self.audio_buffer:
-                audio_data = self.audio_buffer.popleft()
-                # Process audio data here
-                pass
+                pcmu_data = self.audio_buffer.popleft()
+                
+                # Trigger audio callback if registered
+                if self.audio_received_callback:
+                    try:
+                        if self.audio_callback_format == 'pcm':
+                            # Convert PCMU to PCM for callback
+                            pcm_data = self._ulaw_to_pcm(pcmu_data)
+                            self.audio_received_callback(pcm_data, 'pcm')
+                        else:
+                            # Pass raw PCMU data
+                            self.audio_received_callback(pcmu_data, 'pcmu')
+                    except Exception as e:
+                        self.logger.error(f"Error in audio callback: {str(e)}")
+                        
             time.sleep(0.02)
+    
+    def set_audio_callback(self, callback_func, format='pcmu'):
+        """Set callback function for received audio data
+        
+        Args:
+            callback_func: Function to call when audio is received
+                          Function signature: callback_func(audio_data, format)
+            format: 'pcmu' for raw μ-law data, 'pcm' for 16-bit linear PCM
+        """
+        self.audio_received_callback = callback_func
+        self.audio_callback_format = format
+        self.logger.info(f"📻 Audio callback registered (format: {format})")
+    
+    def remove_audio_callback(self):
+        """Remove audio callback"""
+        self.audio_received_callback = None
+        self.logger.info("📻 Audio callback removed")
+    
+    def _ulaw_to_pcm(self, ulaw_data):
+        """Convert μ-law (PCMU) to 16-bit linear PCM"""
+        import numpy as np
+        
+        ulaw_samples = np.frombuffer(ulaw_data, dtype=np.uint8)
+        pcm_samples = []
+        
+        for ulaw_byte in ulaw_samples:
+            # Complement all bits (μ-law is stored complemented)
+            ulaw_byte = ulaw_byte ^ 0xFF
+            
+            # Extract sign, exponent, and mantissa
+            sign = ulaw_byte & 0x80
+            exp = (ulaw_byte & 0x70) >> 4
+            mantissa = ulaw_byte & 0x0F
+            
+            # Calculate linear PCM value
+            if exp == 0:
+                linear = (mantissa << 4) + 0x84
+            else:
+                linear = ((mantissa << 4) + 0x84) << (exp - 1)
+            
+            # Apply bias correction
+            linear -= 0x84
+            
+            # Apply sign
+            if sign:
+                linear = -linear
+                
+            # Ensure 16-bit range
+            linear = max(-32768, min(32767, linear))
+            pcm_samples.append(linear)
+        
+        # Convert to bytes (16-bit signed integers)
+        return np.array(pcm_samples, dtype=np.int16).tobytes()
 
     def _parse_sip_message(self, message):
         """Parse SIP message headers into a dictionary"""
