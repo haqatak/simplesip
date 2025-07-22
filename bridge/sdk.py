@@ -85,6 +85,8 @@ class BetterSIPClient:
             self.rtp_sock.bind((self.local_ip, self.local_rtp_port))
             self.rtp_sock.settimeout(0.1)
             self.rtp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # Set socket to receive broadcast packets (in case of multicast RTP)
+            self.rtp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             self.logger.info(f"RTP socket bound to {self.local_ip}:{self.local_rtp_port}")
             
             self.running = True
@@ -146,25 +148,30 @@ class BetterSIPClient:
         self.cseq += 1
         
     def _generate_sdp_offer(self):
-        """Generate comprehensive SDP offer"""
+        """Generate comprehensive SDP offer with basic RTP/AVP (no encryption)"""
         session_id = int(time.time())
-        return (f"v=0\r\n"
-                f"o={self.username} {session_id} 1 IN IP4 {self.local_ip}\r\n"
-                f"s=SIP Call\r\n"
-                f"c=IN IP4 {self.local_ip}\r\n"
-                f"t=0 0\r\n"
-                f"m=audio {self.local_rtp_port} RTP/AVP 0 8 101\r\n"
-                f"a=rtpmap:0 PCMU/8000\r\n"
-                f"a=rtpmap:8 PCMA/8000\r\n"
-                f"a=rtpmap:101 telephone-event/8000\r\n"
-                f"a=fmtp:101 0-16\r\n"
-                f"a=sendrecv\r\n")
+        sdp = (f"v=0\r\n"
+               f"o={self.username} {session_id} 1 IN IP4 {self.local_ip}\r\n"
+               f"s=SIP Call\r\n"
+               f"c=IN IP4 {self.local_ip}\r\n"
+               f"t=0 0\r\n"
+               f"m=audio {self.local_rtp_port} RTP/AVP 0 8 101\r\n"
+               f"a=rtpmap:0 PCMU/8000\r\n"
+               f"a=rtpmap:8 PCMA/8000\r\n"
+               f"a=rtpmap:101 telephone-event/8000\r\n"
+               f"a=fmtp:101 0-16\r\n"
+               f"a=sendrecv\r\n")
+        
+        self.logger.info(f"📝 SDP offer: Plain RTP/AVP with PCMU/PCMA codecs (no encryption/ICE)")
+        return sdp
             
     def _parse_sdp_answer(self, sdp):
         """Parse SDP answer to get remote RTP info"""
         lines = sdp.split('\r\n')
         ip = None
         port = None
+        rtp_profile = None
+        ice_candidates = []
         
         for line in lines:
             if line.startswith('c='):
@@ -173,23 +180,103 @@ class BetterSIPClient:
                     ip = parts[2]
             elif line.startswith('m=audio'):
                 parts = line.split()
-                if len(parts) >= 2:
+                if len(parts) >= 3:
                     try:
                         port = int(parts[1])
+                        rtp_profile = parts[2]  # RTP/AVP, RTP/SAVPF, etc.
                     except ValueError:
                         continue
+            elif line.startswith('a=candidate:'):
+                # Parse ICE candidates for potential RTP endpoints
+                ice_candidates.append(line)
                     
         if ip and port:
             self.remote_rtp_info = (ip, port)
             self.logger.info(f"SDP accepted - RTP endpoint: {ip}:{port}")
+            self.logger.info(f"🔗 RTP connection: {self.local_ip}:{self.local_rtp_port} ↔ {ip}:{port}")
+            
+            if rtp_profile:
+                self.logger.info(f"🔒 RTP Profile: {rtp_profile}")
+                if 'SAVPF' in rtp_profile or 'SAVP' in rtp_profile:
+                    self.logger.warning(f"⚠️  Server wants secure RTP ({rtp_profile}) but client only supports plain RTP/AVP")
+                    self.logger.warning(f"⚠️  RTP packets may not be received due to encryption/ICE requirements")
+                    
+                    # Try to find alternative RTP endpoint from ICE candidates
+                    if ice_candidates:
+                        self.logger.info(f"🧊 Trying to find plain RTP endpoint from {len(ice_candidates)} ICE candidates...")
+                        for candidate in ice_candidates[:3]:  # Try first 3 candidates
+                            self.logger.info(f"🧊 ICE candidate: {candidate}")
+            
             return True
         self.logger.error("SDP parsing failed - no valid RTP endpoint found")
         return False
     
+    def _send_test_rtp_packet(self):
+        """Send a test RTP packet to verify connection"""
+        if not self.remote_rtp_info:
+            return
+            
+        try:
+            # Send empty RTP packet as connectivity test
+            header = struct.pack('!BBHII', 
+                                0x80,  # Version=2, Padding=0, Extension=0, CC=0
+                                0,     # Marker=0, Payload Type=0 (PCMU)
+                                self.rtp_seq,
+                                self.rtp_timestamp,
+                                self.rtp_ssrc)
+            
+            self.rtp_sock.sendto(header, self.remote_rtp_info)
+            self.logger.info(f"📤 Test RTP packet sent to {self.remote_rtp_info}")
+            
+            # Update sequence
+            self.rtp_seq = (self.rtp_seq + 1) % 65536
+            
+        except Exception as e:
+            self.logger.error(f"Error sending test RTP packet: {str(e)}")
+            
+        # Also try sending with different configurations after delay
+        import threading
+        threading.Timer(2.0, self._send_multiple_rtp_tests).start()
+    
+    def _send_multiple_rtp_tests(self):
+        """Send RTP test packets with different configurations"""
+        if not self.remote_rtp_info or not self.running:
+            return
+            
+        test_ports = [
+            self.remote_rtp_info[1],  # Original port
+            self.remote_rtp_info[1] + 1,  # RTCP port  
+            self.remote_rtp_info[1] - 1,  # Alternative port
+        ]
+        
+        for port_offset, port in enumerate(test_ports):
+            try:
+                # Test different RTP configurations
+                test_endpoint = (self.remote_rtp_info[0], port)
+                
+                # Send test packet with different payload types
+                for pt in [0, 8]:  # PCMU and PCMA
+                    header = struct.pack('!BBHII', 
+                                        0x80,  # Version=2
+                                        pt,    # Payload type
+                                        self.rtp_seq + port_offset,
+                                        self.rtp_timestamp,
+                                        self.rtp_ssrc)
+                    
+                    # Send with small payload
+                    payload = bytes([0x80] * 20)  # Short silence
+                    self.rtp_sock.sendto(header + payload, test_endpoint)
+                    self.logger.info(f"🔍 Test RTP PT{pt} sent to {test_endpoint}")
+                    
+                time.sleep(0.1)
+                
+            except Exception as e:
+                self.logger.error(f"Error in RTP test to {test_endpoint}: {str(e)}")
+    
     def send_audio(self, audio_data):
         """Send audio data via RTP with proper sequence handling"""
         if not self.remote_rtp_info:
-                return
+            return
             
         try:
             # Proper RTP header with sequence number management
@@ -212,8 +299,18 @@ class BetterSIPClient:
             
     def _rtp_receive_thread(self):
         """Thread to receive and process incoming RTP packets"""
+        self.logger.info(f"🎙️ RTP receive thread started - listening on {self.local_ip}:{self.local_rtp_port}")
+        
         while self.running:
             try:
+                # Add periodic status logging when connected but no RTP received
+                if self.call_state == CallState.CONNECTED and hasattr(self, '_last_rtp_log'):
+                    if (datetime.now() - self._last_rtp_log).total_seconds() > 5:
+                        self.logger.info(f"🔍 Still waiting for RTP packets from {self.remote_rtp_info}...")
+                        self._last_rtp_log = datetime.now()
+                elif self.call_state == CallState.CONNECTED and not hasattr(self, '_last_rtp_log'):
+                    self._last_rtp_log = datetime.now()
+                    
                 data, addr = self.rtp_sock.recvfrom(2048)
                 if len(data) > 12:  # RTP header is 12 bytes minimum
                     payload = data[12:]
@@ -226,6 +323,25 @@ class BetterSIPClient:
                 elif len(data) > 0:
                     self.logger.info(f"Short RTP packet received: {len(data)} bytes from {addr}")
             except socket.timeout:
+                # Try to receive any packet, even if it's not from expected source
+                try:
+                    self.rtp_sock.settimeout(0.001)  # Very short timeout
+                    data, addr = self.rtp_sock.recvfrom(2048)
+                    if data:
+                        self.logger.info(f"📦 Unexpected packet from {addr}: {len(data)} bytes")
+                        if len(data) >= 12:  # Could be RTP
+                            # Check if it looks like RTP (version = 2 in first 2 bits)
+                            if data[0] & 0xC0 == 0x80:
+                                self.logger.info(f"🎙️ Potential RTP packet detected!")
+                                payload = data[12:]
+                                self.audio_buffer.append(payload)
+                                if self.call_state == CallState.CONNECTED:
+                                    self.call_state = CallState.STREAMING
+                                    self.logger.info(f"🎙️ CALL STATUS: STREAMING - Audio stream started")
+                except:
+                    pass
+                finally:
+                    self.rtp_sock.settimeout(0.1)  # Reset timeout
                 continue
             except Exception as e:
                 if self.running:  # Only log if we're still supposed to be running
@@ -721,6 +837,9 @@ class BetterSIPClient:
                 self.call_state = CallState.CONNECTED
                 self.logger.info(f"✅ CALL STATUS: CONNECTED - Call established successfully")
                 
+                # Send test RTP packet to verify connection
+                self._send_test_rtp_packet()
+                
             elif transaction['type'] == 'REGISTER':
                 pass
                 
@@ -742,6 +861,9 @@ class BetterSIPClient:
                 self.invite_in_progress = False
                 self.call_state = CallState.CONNECTED
                 self.logger.info(f"✅ CALL STATUS: CONNECTED - Call established successfully")
+                
+                # Send test RTP packet to verify connection
+                self._send_test_rtp_packet()
 
     def _handle_incoming_invite(self, message, headers):
         """Enhanced incoming INVITE handling"""
