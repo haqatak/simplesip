@@ -6,18 +6,18 @@
 
 A lightweight, easy-to-use Python library for SIP (Session Initiation Protocol) communication with RTP audio streaming capabilities. Perfect for building VoIP applications, automated calling systems, and SIP-based integrations.
 
-## ( Features
+## Features
 
-- =Ä **Simple API** - Easy-to-use interface for SIP operations
-- =ﬁ **Full SIP Support** - Registration, calls, and session management
-- <µ **Real-time Audio** - RTP audio streaming with º-law (PCMU) encoding
-- <§ **Audio Capture** - Built-in microphone support with PyAudio integration
-- = **Authentication** - Digest authentication support
-- >ı **Async Operations** - Non-blocking operations with threading
-- =  **Call States** - Comprehensive call state management
-- =‡ **Extensible** - Easy to extend and customize for your needs
+- **Simple API** - Easy-to-use interface for SIP operations
+- **Full SIP Support** - Registration, calls, and session management
+- **Real-time Audio** - RTP audio streaming with Œº-law (PCMU) encoding
+- **Audio Capture** - Built-in microphone support with PyAudio integration
+- **Authentication** - Digest authentication support
+- **Async Operations** - Non-blocking operations with threading
+- **Call States** - Comprehensive call state management
+- **Extensible** - Easy to extend and customize for your needs
 
-## =Ä Quick Start
+## Quick Start
 
 ### Installation
 
@@ -49,44 +49,23 @@ client = SimpleSIPClient(
 client.connect()
 
 # Make a call
-client.make_call("1001")  # Call extension 1001
+client.call("1234567890")
 
-# Wait for call to establish
-time.sleep(5)
+# Wait for the call to be established
+while client.call_state.value != 'connected':
+    time.sleep(0.1)
 
-# End the call
+# Keep the call active for 10 seconds
+time.sleep(10)
+
+# Hang up
+client.hangup()
+
+# Disconnect from server
 client.disconnect()
 ```
 
-### Advanced Usage with Audio
-
-```python
-from simplesip import SimpleSIPClient
-import time
-
-def audio_received_callback(audio_data, format='pcmu'):
-    """Handle incoming audio data"""
-    print(f"Received {len(audio_data)} bytes of {format} audio")
-    # Process audio data here
-
-# Create client with audio callback
-client = SimpleSIPClient("username", "password", "server.com")
-client.set_audio_callback(audio_received_callback)
-
-# Connect and make call
-client.connect()
-client.make_call("1002")
-
-# Keep call active
-while client.call_state.value != 'idle':
-    status = client.get_call_status()
-    print(f"Call status: {status['state']}")
-    time.sleep(1)
-
-client.disconnect()
-```
-
-## =⁄ API Reference
+## API Reference
 
 ### SimpleSIPClient
 
@@ -95,69 +74,73 @@ The main class for SIP operations.
 #### Constructor
 
 ```python
-SimpleSIPClient(username: str, password: str, server: str, port: int = 5060)
+SimpleSIPClient(username, password, server, port=5060, local_port=None, timeout=5)
 ```
 
 **Parameters:**
-- `username` (str): SIP username/extension
+- `username` (str): SIP username
 - `password` (str): SIP password
-- `server` (str): SIP server IP address or hostname
+- `server` (str): SIP server hostname or IP
 - `port` (int): SIP server port (default: 5060)
+- `local_port` (int): Local port for SIP (default: random)
+- `timeout` (int): Connection timeout in seconds (default: 5)
 
 #### Methods
 
-##### Connection Management
+##### connect()
+Connect to the SIP server and register.
 
 ```python
-client.connect() -> bool
+client.connect()
 ```
-Connect to the SIP server and register.
+
+##### call(number)
+Initiate a call to the specified number.
+
+```python
+client.call("1234567890")
+```
+
+##### hangup()
+End the current call.
+
+```python
+client.hangup()
+```
+
+##### disconnect()
+Disconnect from the SIP server.
 
 ```python
 client.disconnect()
 ```
-Disconnect from SIP server and cleanup.
 
-##### Call Operations
-
-```python
-client.make_call(destination: str) -> bool
-```
-Initiate a call to the specified destination.
+##### send_audio(audio_data)
+Send audio data during an active call.
 
 ```python
-client.answer_call() -> bool
+client.send_audio(ulaw_audio_data)
 ```
-Answer an incoming call.
+
+##### set_audio_callback(callback, format='pcmu')
+Set a callback function to handle incoming audio.
 
 ```python
-client.end_call()
-```
-End the current active call.
+def audio_handler(audio_data, format):
+    # Process incoming audio
+    pass
 
-##### Audio Operations
+client.set_audio_callback(audio_handler, format='pcmu')
+```
+
+##### get_call_status()
+Get the current call status.
 
 ```python
-client.set_audio_callback(callback_func: callable, format: str = 'pcmu')
+status = client.get_call_status()
+print(f"State: {status['state']}")
+print(f"Duration: {status['duration']}")
 ```
-Set callback function for incoming audio data.
-
-```python
-client.send_audio(audio_data: bytes)
-```
-Send audio data via RTP.
-
-##### Status and Information
-
-```python
-client.get_call_status() -> dict
-```
-Get current call status and information.
-
-```python
-client.call_state -> CallState
-```
-Current call state (IDLE, INVITING, RINGING, CONNECTED, STREAMING).
 
 ### Call States
 
@@ -169,13 +152,13 @@ The library uses an enum for call states:
 - `CallState.CONNECTED` - Call connected but no media
 - `CallState.STREAMING` - Call with active audio streaming
 
-## <µ Audio Support
+## Audio Support
 
-SimpleSIP supports real-time audio streaming using RTP protocol with º-law (PCMU) encoding.
+SimpleSIP supports real-time audio streaming using RTP protocol with Œº-law (PCMU) encoding.
 
 ### Audio Formats
 
-- **PCMU (º-law)**: Primary format for SIP/RTP
+- **PCMU (Œº-law)**: Primary format for SIP/RTP
 - **PCM**: Linear 16-bit audio for processing
 
 ### Audio Callback
@@ -185,7 +168,7 @@ Set up an audio callback to handle incoming audio:
 ```python
 def handle_audio(audio_data, format):
     if format == 'pcmu':
-        # Handle º-law encoded audio
+        # Handle Œº-law encoded audio
         pass
     elif format == 'pcm':
         # Handle linear PCM audio
@@ -196,21 +179,21 @@ client.set_audio_callback(handle_audio, format='pcmu')
 
 ### Microphone Integration
 
-Example with PyAudio for microphone input:
-
 ```python
 import pyaudio
 import numpy as np
 
 # Audio configuration
-CHUNK = 160  # 20ms at 8kHz
-RATE = 8000
+CHUNK = 1024
 FORMAT = pyaudio.paInt16
+CHANNELS = 1
+RATE = 8000
 
-audio = pyaudio.PyAudio()
-stream = audio.open(
+# Initialize PyAudio
+p = pyaudio.PyAudio()
+stream = p.open(
     format=FORMAT,
-    channels=1,
+    channels=CHANNELS,
     rate=RATE,
     input=True,
     frames_per_buffer=CHUNK
@@ -219,12 +202,12 @@ stream = audio.open(
 # Capture and send audio
 while client.call_state.value in ['connected', 'streaming']:
     data = stream.read(CHUNK)
-    # Convert PCM to º-law (implement conversion)
+    # Convert PCM to Œº-law (implement conversion)
     ulaw_data = pcm_to_ulaw(data)
     client.send_audio(ulaw_data)
 ```
 
-## =÷ Examples
+## Examples
 
 ### Complete Call Example
 
@@ -233,92 +216,71 @@ from simplesip import SimpleSIPClient
 import time
 import threading
 
-class VoIPApp:
-    def __init__(self):
-        self.client = SimpleSIPClient("1001", "password", "192.168.1.100")
-        self.client.set_audio_callback(self.on_audio_received)
-        
-    def on_audio_received(self, audio_data, format):
-        # Play or process received audio
-        print(f"Received audio: {len(audio_data)} bytes")
-        
-    def make_call(self, number):
-        if self.client.connect():
-            print("Connected to SIP server")
-            
-            if self.client.make_call(number):
-                print(f"Calling {number}...")
-                
-                # Wait for call to connect
-                while self.client.call_state.value not in ['connected', 'streaming']:
-                    if self.client.call_state.value == 'idle':
-                        print("Call failed or ended")
-                        return
-                    time.sleep(0.1)
-                
-                print("Call connected!")
-                
-                # Keep call active for 30 seconds
-                time.sleep(30)
-                
-                self.client.end_call()
-                print("Call ended")
-            
-            self.client.disconnect()
+def audio_callback(audio_data, format):
+    """Handle incoming audio data"""
+    print(f"Received {len(audio_data)} bytes of {format} audio")
 
-# Usage
-app = VoIPApp()
-app.make_call("1002")
+# Create client
+client = SimpleSIPClient(
+    username="1001",
+    password="secret123",
+    server="sip.example.com"
+)
+
+# Set up audio handling
+client.set_audio_callback(audio_callback, format='pcmu')
+
+try:
+    # Connect to server
+    print("Connecting to SIP server...")
+    client.connect()
+    print("Connected and registered!")
+    
+    # Make a call
+    print("Making call to 1002...")
+    client.call("1002")
+    
+    # Wait for call to be answered
+    timeout = 30
+    start_time = time.time()
+    
+    while client.call_state.value not in ['connected', 'streaming']:
+        if time.time() - start_time > timeout:
+            print("Call timeout!")
+            break
+        
+        status = client.get_call_status()
+        print(f"Call status: {status['state']}")
+        time.sleep(1)
+    
+    if client.call_state.value in ['connected', 'streaming']:
+        print("Call connected! Audio streaming active.")
+        
+        # Keep call active for 30 seconds
+        time.sleep(30)
+        
+        # Hang up
+        print("Hanging up...")
+        client.hangup()
+    
+finally:
+    # Clean disconnect
+    client.disconnect()
+    print("Disconnected from server")
 ```
 
-### Server Integration Example
+### Configuration Options
 
 ```python
-from simplesip import SimpleSIPClient
-import asyncio
-
-class SIPServer:
-    def __init__(self):
-        self.clients = {}
-    
-    async def handle_incoming_call(self, client_id, caller_number):
-        client = SimpleSIPClient("extension", "password", "server")
-        client.set_audio_callback(lambda data, fmt: self.relay_audio(data, client_id))
-        
-        if client.connect():
-            await asyncio.sleep(1)  # Ring simulation
-            client.answer_call()
-            
-            # Handle call...
-            await asyncio.sleep(10)
-            
-            client.end_call()
-            client.disconnect()
-    
-    def relay_audio(self, audio_data, client_id):
-        # Relay audio to other clients or process
-        pass
-```
-
-## =' Configuration
-
-### Environment Variables
-
-Set default configuration using environment variables:
-
-```bash
-export SIMPLESIP_SERVER="your-sip-server.com"
-export SIMPLESIP_USERNAME="your-username"
-export SIMPLESIP_PASSWORD="your-password"
-```
-
-### Advanced Configuration
-
-```python
-client = SimpleSIPClient("user", "pass", "server")
-
-# Configure RTP port range
-client.local_rtp_port = 10000
+# Create client with custom settings
+client = SimpleSIPClient(
+    username="myuser",
+    password="mypass",
+    server="192.168.1.100",
+    port=5060,           # Custom SIP port
+    local_port=5061,     # Custom local port
+    timeout=10           # Custom timeout
+)
 
 # Set custom timeout
 client.timeout = 30
@@ -328,7 +290,7 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 ```
 
-## =‡ Development
+## Development
 
 ### Requirements
 
@@ -339,28 +301,30 @@ logging.basicConfig(level=logging.DEBUG)
 ### Running Tests
 
 ```bash
+# Install development dependencies
 pip install -e .[dev]
+
+# Run tests
 pytest
+
+# Run tests with coverage
+pytest --cov=simplesip
 ```
 
-### Code Quality
+### Building Documentation
 
 ```bash
-# Format code
-black simplesip/
+# Install docs dependencies
+pip install sphinx sphinx-rtd-theme
 
-# Type checking
-mypy simplesip/
-
-# Linting
-flake8 simplesip/
+# Build docs
+cd docs
+make html
 ```
 
-## > Contributing
+## Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-### Quick Contribution Guide
+Contributions are welcome! Please follow these steps:
 
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feature-name`
@@ -371,14 +335,14 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 7. Push to branch: `git push origin feature-name`
 8. Submit a Pull Request
 
-## † Known Limitations
+## Known Limitations
 
-- Currently supports PCMU (º-law) audio encoding only
+- Currently supports PCMU (Œº-law) audio encoding only
 - IPv4 only (IPv6 support planned)
 - Basic SIP features (advanced features in development)
 - No built-in STUN/TURN support yet
 
-## =˙ Roadmap
+## Roadmap
 
 - [ ] Additional audio codecs (G.711 A-law, G.722)
 - [ ] IPv6 support
@@ -388,28 +352,28 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 - [ ] Call transfer and hold functionality
 - [ ] Advanced SDP negotiation
 
-## =ƒ License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## =h=ª Author
+## Author
 
 **Awais Khan**
 - Email: [contact@awaiskhan.com.pk](mailto:contact@awaiskhan.com.pk)
 - GitHub: [@Awaiskhan404](https://github.com/Awaiskhan404)
 
-## =O Acknowledgments
+## Acknowledgments
 
 - Built with Python's socket and threading libraries
 - Audio processing powered by NumPy
 - Inspired by the SIP protocol specification (RFC 3261)
 
-## =ﬁ Support
+## Support
 
-- = **Bug Reports**: [GitHub Issues](https://github.com/Awaiskhan404/simplesip/issues)
-- =¨ **Discussions**: [GitHub Discussions](https://github.com/Awaiskhan404/simplesip/discussions)
-- =Á **Email**: [contact@awaiskhan.com.pk](mailto:contact@awaiskhan.com.pk)
+- **Bug Reports**: [GitHub Issues](https://github.com/Awaiskhan404/simplesip/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/Awaiskhan404/simplesip/discussions)
+- **Email**: [contact@awaiskhan.com.pk](mailto:contact@awaiskhan.com.pk)
 
 ---
 
-*Made with d for the Python and VoIP communities*
+*Made with ‚ù§Ô∏è for the Python and VoIP communities*
