@@ -1,5 +1,5 @@
 # from bridge.server import BetterSIPCall
-from bridge.sdk import BetterSIPClient
+from simplesip import SimpleSIPClient
 import time
 import threading
 import struct
@@ -11,7 +11,7 @@ except ImportError:
     exit(1)
 
 
-client = BetterSIPClient("1004", "ba5cc9c1a2b8632caf467b326e9e27e6", "10.128.50.210")
+client = SimpleSIPClient("1004", "ba5cc9c1a2b8632caf467b326e9e27e6", "10.128.50.210")
 
 # Audio configuration
 CHUNK = 160  # 20ms at 8kHz (160 samples)

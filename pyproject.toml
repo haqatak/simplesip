@@ -1,12 +1,91 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "sipbridge"
+name = "simplesip"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.13"
-dependencies = [
-    "pexpect>=4.9.0",
-    "pyaudio>=0.2.14",
-    "python-sip-client>=0.0.4",
-    "ruff>=0.12.3",
+authors = [
+    {name = "Awais khan", email = "contact@awaiskhan.com.pk"},
 ]
+description = "Simple SIP client library with RTP audio streaming capabilities"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Telephony",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["sip", "voip", "rtp", "audio", "streaming", "telephony", "simple"]
+dependencies = [
+    "numpy>=1.19.0",
+]
+
+[project.optional-dependencies]
+audio = ["pyaudio>=0.2.11"]
+dev = [
+    "pytest>=6.0",
+    "pytest-cov>=2.0",
+    "black>=21.0",
+    "flake8>=3.8",
+    "mypy>=0.800",
+    "isort>=5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Awaiskhan404/simplesip"
+Documentation = "https://simplesip.readthedocs.io/"
+Repository = "https://github.com/Awaiskhan404/simplesip.git"
+"Bug Tracker" = "https://github.com/Awaiskhan404/simplesip/issues"
+
+[project.scripts]
+simplesip-demo = "simplesip.examples.demo:main"
+
+[tool.setuptools.packages.find]
+exclude = ["tests*", "examples*"]
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "--cov=simplesip --cov-report=html --cov-report=term-missing"
