@@ -1,4 +1,4 @@
-"""Demo script showing basic usage of simplesip."""
+"""Demo script showing basic usage of simplesipclient."""
 
 from simplesip import SimpleSIPClient
 import time
