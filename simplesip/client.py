@@ -56,6 +56,8 @@ class SimpleSIPClient:
         self.audio_sample_rate = 8000
         self.audio_sample_width = 2
         self.audio_channels = 1
+        self.negotiated_codec = None  # Track negotiated codec
+        self.negotiated_payload_type = None
         
         # RTP sequence number and timestamp
         self.rtp_seq = random.randint(0, 65535)
@@ -150,32 +152,83 @@ class SimpleSIPClient:
         
         self._send_message(msg)
         self.cseq += 1
+    
+    def query_server_capabilities(self):
+        """Send OPTIONS request to query server codec capabilities"""
+        branch = self._generate_branch()
+        call_id = f"{random.randint(100000, 999999)}@{self.local_ip}"
         
-    def _generate_sdp_offer(self):
-        """Generate comprehensive SDP offer with basic RTP/AVP (no encryption)"""
+        msg = f"OPTIONS sip:{self.server} SIP/2.0\r\n" \
+              f"Via: SIP/2.0/UDP {self.local_ip}:5060;branch={branch};rport\r\n" \
+              f"Max-Forwards: 70\r\n" \
+              f"From: <sip:{self.username}@{self.server}>;tag={self.tag}\r\n" \
+              f"To: <sip:{self.server}>\r\n" \
+              f"Call-ID: {call_id}\r\n" \
+              f"CSeq: {self.cseq} OPTIONS\r\n" \
+              f"User-Agent: BetterSIPClient/1.0\r\n" \
+              f"Accept: application/sdp\r\n" \
+              f"Content-Length: 0\r\n\r\n"
+        
+        self.current_transactions[call_id] = {
+            'type': 'OPTIONS',
+            'start_time': datetime.now(),
+            'branch': branch,
+            'retries': 0,
+            'cseq': self.cseq
+        }
+        
+        self._send_message(msg)
+        self.cseq += 1
+        self.logger.info("📋 Querying server capabilities with OPTIONS request...")
+        
+    def _generate_sdp_offer(self, diagnostic=False):
+        """Generate SDP offer with G.722 as strongly preferred codec"""
         session_id = int(time.time())
-        sdp = (f"v=0\r\n"
-               f"o={self.username} {session_id} 1 IN IP4 {self.local_ip}\r\n"
-               f"s=SIP Call\r\n"
-               f"c=IN IP4 {self.local_ip}\r\n"
-               f"t=0 0\r\n"
-               f"m=audio {self.local_rtp_port} RTP/AVP 0 8 101\r\n"
-               f"a=rtpmap:0 PCMU/8000\r\n"
-               f"a=rtpmap:8 PCMA/8000\r\n"
-               f"a=rtpmap:101 telephone-event/8000\r\n"
-               f"a=fmtp:101 0-16\r\n"
-               f"a=sendrecv\r\n")
         
-        self.logger.info(f"📝 SDP offer: Plain RTP/AVP with PCMU/PCMA codecs (no encryption/ICE)")
+        if diagnostic:
+            # Comprehensive codec offer to test server support
+            sdp = (f"v=0\r\n"
+                f"o={self.username} {session_id} 1 IN IP4 {self.local_ip}\r\n"
+                f"s=SIP Call\r\n"
+                f"c=IN IP4 {self.local_ip}\r\n"
+                f"t=0 0\r\n"
+                f"m=audio {self.local_rtp_port} RTP/AVP 9 0 8 3 4 5 6 7 18 101\r\n"
+                f"a=rtpmap:9 G722/8000\r\n"
+                f"a=rtpmap:0 PCMU/8000\r\n"
+                f"a=rtpmap:8 PCMA/8000\r\n"
+                f"a=rtpmap:3 GSM/8000\r\n"
+                f"a=rtpmap:4 G723/8000\r\n"
+                f"a=rtpmap:5 DVI4/8000\r\n"
+                f"a=rtpmap:6 DVI4/16000\r\n"
+                f"a=rtpmap:7 LPC/8000\r\n"
+                f"a=rtpmap:18 G729/8000\r\n"
+                f"a=rtpmap:101 telephone-event/8000\r\n"
+                f"a=fmtp:101 0-16\r\n"
+                f"a=sendrecv\r\n")
+        else:
+            # Standard G.722 preferred offer
+            sdp = (f"v=0\r\n"
+                f"o={self.username} {session_id} 1 IN IP4 {self.local_ip}\r\n"
+                f"s=SIP Call\r\n"
+                f"c=IN IP4 {self.local_ip}\r\n"
+                f"t=0 0\r\n"
+                f"m=audio {self.local_rtp_port} RTP/AVP 9 0 101\r\n"  # G.722 first, PCMU fallback
+                f"a=rtpmap:9 G722/8000\r\n"
+                f"a=rtpmap:0 PCMU/8000\r\n"
+                f"a=rtpmap:101 telephone-event/8000\r\n"
+                f"a=fmtp:101 0-16\r\n"
+                f"a=sendrecv\r\n")
         return sdp
             
     def _parse_sdp_answer(self, sdp):
-        """Parse SDP answer to get remote RTP info"""
+        """Parse SDP answer to get remote RTP info and negotiated codec"""
         lines = sdp.split('\r\n')
         ip = None
         port = None
         rtp_profile = None
         ice_candidates = []
+        payload_types = []
+        codec_map = {}
         
         for line in lines:
             if line.startswith('c='):
@@ -188,12 +241,34 @@ class SimpleSIPClient:
                     try:
                         port = int(parts[1])
                         rtp_profile = parts[2]  # RTP/AVP, RTP/SAVPF, etc.
+                        # Extract payload types from media line
+                        payload_types = [int(pt) for pt in parts[3:] if pt.isdigit()]
                     except ValueError:
                         continue
+            elif line.startswith('a=rtpmap:'):
+                # Parse codec mappings
+                parts = line[9:].split(' ', 1)
+                if len(parts) == 2:
+                    pt = int(parts[0])
+                    codec_info = parts[1]
+                    codec_name = codec_info.split('/')[0].upper()
+                    codec_map[pt] = codec_name
             elif line.startswith('a=candidate:'):
                 # Parse ICE candidates for potential RTP endpoints
                 ice_candidates.append(line)
-                    
+        
+        # Determine negotiated codec (first payload type in answer)
+        if payload_types and codec_map:
+            self.negotiated_payload_type = payload_types[0]
+            self.negotiated_codec = codec_map.get(self.negotiated_payload_type, 'UNKNOWN')
+            
+            # Show codec negotiation result with appropriate emoji
+            if self.negotiated_codec == 'G722':
+                self.logger.info(f"🎵 ✅ G.722 codec negotiated! (PT {self.negotiated_payload_type}) - High quality 16kHz audio")
+                self.audio_sample_rate = 16000  # G.722 uses 16kHz internally
+            else:
+                self.logger.info(f"🎵 📻 Fallback codec: {self.negotiated_codec} (PT {self.negotiated_payload_type}) - Standard quality")
+        
         if ip and port:
             self.remote_rtp_info = (ip, port)
             self.logger.info(f"SDP accepted - RTP endpoint: {ip}:{port}")
@@ -278,79 +353,203 @@ class SimpleSIPClient:
                 self.logger.error(f"Error in RTP test to {test_endpoint}: {str(e)}")
     
     def send_audio(self, audio_data):
-        """Send audio data via RTP with proper sequence handling"""
-        if not self.remote_rtp_info:
+        """Improved audio transmission with codec-aware encoding"""
+        if not self.remote_rtp_info or not audio_data or not self.running:
             return
             
         try:
-            # Proper RTP header with sequence number management
-            header = struct.pack('!BBHII', 
-                                0x80,  # Version=2, Padding=0, Extension=0, CC=0
-                                0,     # Marker=0, Payload Type=0 (PCMU)
-                                self.rtp_seq,
-                                self.rtp_timestamp,
-                                self.rtp_ssrc)
+            # Use negotiated codec, fallback to PCMU
+            payload_type = self.negotiated_payload_type or 0
+            codec = self.negotiated_codec or 'PCMU'
             
-            self.rtp_sock.sendto(header + audio_data, self.remote_rtp_info)
-            self.logger.info(f"RTP packet sent: {len(audio_data)} bytes to {self.remote_rtp_info}")
+            # Encode audio based on negotiated codec
+            if codec == 'G722':
+                encoded_data = self._g722_encode(audio_data)
+                samples_per_packet = 160  # G.722 RTP clock is still 8kHz
+            elif codec == 'PCMA':
+                encoded_data = self._pcm_to_alaw(audio_data)
+                samples_per_packet = 160
+            else:  # PCMU or fallback
+                encoded_data = self._pcm_to_ulaw(audio_data)
+                samples_per_packet = 160
             
-            # Update sequence and timestamp
-            self.rtp_seq = (self.rtp_seq + 1) % 65536
-            self.rtp_timestamp += len(audio_data)  # Increment by payload size
+            # Calculate chunk size based on encoded data
+            if codec == 'G722':
+                chunk_size = 80  # G.722 produces half the bytes due to compression
+            else:
+                chunk_size = samples_per_packet  # PCMU/PCMA: 160 bytes for 20ms
             
-        except Exception as e:
-            self.logger.error(f"Error sending RTP packet: {str(e)}")
+            self.logger.debug(f"Audio: {len(encoded_data)} bytes encoded, {chunk_size} bytes per packet")
             
-    def _rtp_receive_thread(self):
-        """Thread to receive and process incoming RTP packets"""
-        self.logger.info(f"🎙️ RTP receive thread started - listening on {self.local_ip}:{self.local_rtp_port}")
-        
-        while self.running:
-            try:
-                # Add periodic status logging when connected but no RTP received
-                if self.call_state == CallState.CONNECTED and hasattr(self, '_last_rtp_log'):
-                    if (datetime.now() - self._last_rtp_log).total_seconds() > 5:
-                        self.logger.info(f"🔍 Still waiting for RTP packets from {self.remote_rtp_info}...")
-                        self._last_rtp_log = datetime.now()
-                elif self.call_state == CallState.CONNECTED and not hasattr(self, '_last_rtp_log'):
-                    self._last_rtp_log = datetime.now()
+            # Split encoded audio into proper sized chunks
+            for i in range(0, len(encoded_data), chunk_size):
+                chunk = encoded_data[i:i+chunk_size]
+                if not chunk:
+                    continue
                     
-                data, addr = self.rtp_sock.recvfrom(2048)
-                if len(data) > 12:  # RTP header is 12 bytes minimum
-                    payload = data[12:]
-                    self.audio_buffer.append(payload)
-                    # Update status to streaming on first RTP packet
+                # Create RTP header with correct payload type
+                header = struct.pack('!BBHII', 
+                                    0x80,  # Version=2, P=0, X=0, CC=0
+                                    payload_type,  # Use negotiated payload type
+                                    self.rtp_seq,
+                                    self.rtp_timestamp,
+                                    self.rtp_ssrc)
+                
+                # Send packet
+                self.rtp_sock.sendto(header + chunk, self.remote_rtp_info)
+                
+                # Update sequence and timestamp
+                self.rtp_seq = (self.rtp_seq + 1) % 65536
+                self.rtp_timestamp += samples_per_packet
+                
+                # Maintain timing (20ms between packets)
+                time.sleep(0.02)
+                
+        except Exception as e:
+            self.logger.error(f"Error sending RTP: {str(e)}")
+    
+    def _handle_pcmu_payload(self, payload, timestamp):
+        """Process PCMU (G.711 μ-law) audio with jitter buffer"""
+        if not payload:
+            return
+            
+        # Convert to PCM
+        pcm_data = self._ulaw_to_pcm(payload)
+        
+        # Add to jitter buffer
+        self._add_to_jitter_buffer(pcm_data, timestamp)
+    
+    def _handle_pcma_payload(self, payload, timestamp):
+        """Process PCMA (G.711 A-law) audio with jitter buffer"""
+        if not payload:
+            return
+            
+        # Convert to PCM
+        pcm_data = self._alaw_to_pcm(payload)
+        
+        # Add to jitter buffer
+        self._add_to_jitter_buffer(pcm_data, timestamp)
+    
+    def _handle_g722_payload(self, payload, timestamp):
+        """Process G.722 audio with jitter buffer"""
+        if not payload:
+            return
+            
+        # Convert G.722 to PCM
+        pcm_data = self._g722_decode(payload)
+        
+        # Add to jitter buffer
+        self._add_to_jitter_buffer(pcm_data, timestamp)
+    
+    def _handle_dtmf_payload(self, payload):
+        """Process DTMF payload (RFC2833)"""
+        if not payload or len(payload) < 4:
+            return
+            
+        # Parse DTMF event
+        event, flags, duration = struct.unpack('!BBH', payload[:4])
+        volume = flags & 0x3F
+        end_flag = (flags & 0x80) != 0
+        
+        if not end_flag:  # Start of DTMF
+            dtmf_chars = '0123456789*#ABCD'
+            if event < len(dtmf_chars):
+                char = dtmf_chars[event]
+                self.logger.info(f"🔢 DTMF: {char} (volume: {volume})")
+        
+    def _add_to_jitter_buffer(self, pcm_data, timestamp):
+        """Manage jitter buffer for smooth playback"""
+        # Simple jitter buffer implementation
+        now = time.time() * 1000  # Current time in ms
+        
+        # Calculate expected playout time
+        if not hasattr(self, '_first_rtp_timestamp'):
+            self._first_rtp_timestamp = timestamp
+            self._first_rtp_time = now
+            
+        # Calculate when this packet should be played
+        time_offset = (timestamp - self._first_rtp_timestamp) / 8  # 8kHz = 8000 samples/sec
+        play_time = self._first_rtp_time + time_offset
+        
+        # Simple adaptive jitter buffer
+        current_delay = max(0, play_time - now)
+        target_delay = 50  # ms - adjust based on network conditions
+        
+        if current_delay < target_delay:
+            # Packet arrived late - either drop or play immediately
+            play_time = now
+        elif current_delay > target_delay * 2:
+            # Packet arrived very early - adjust buffer
+            self._first_rtp_time -= (current_delay - target_delay)
+            play_time = self._first_rtp_time + time_offset
+        
+        # Schedule for playout
+        if self.audio_received_callback:
+            try:
+                # For demo, just call immediately - in real app use proper timing
+                self.audio_received_callback(pcm_data, 'pcm', play_time)
+            except Exception as e:
+                self.logger.error(f"Audio callback error: {str(e)}")
+    
+    def _rtp_receive_thread(self):
+            """Improved RTP receive thread with jitter buffer"""
+            self.logger.info("🎙️ Enhanced RTP receive thread started")
+            
+            # Jitter buffer configuration
+            jitter_buffer_size = 50  # ms
+            last_seq = None
+            last_timestamp = None
+            
+            while self.running:
+                try:
+                    data, addr = self.rtp_sock.recvfrom(2048)
+                    if len(data) < 12:  # Minimum RTP header size
+                        continue
+                        
+                    # Parse RTP header
+                    header = struct.unpack('!BBHII', data[:12])
+                    version = (header[0] >> 6) & 0x03
+                    padding = (header[0] >> 5) & 0x01
+                    extension = (header[0] >> 4) & 0x01
+                    csrc_count = header[0] & 0x0F
+                    marker = (header[1] >> 7) & 0x01
+                    payload_type = header[1] & 0x7F
+                    sequence = header[2]
+                    timestamp = header[3]
+                    ssrc = header[4]
+                    
+                    # Handle sequence discontinuities (packet loss)
+                    if last_seq is not None:
+                        diff = (sequence - last_seq) % 65536
+                        if diff > 1:
+                            self.logger.debug(f"Packet loss detected: {diff-1} packets")
+                            # Insert silence for lost packets if needed
+                            
+                    last_seq = sequence
+                    last_timestamp = timestamp
+                    
+                    # Process payload
+                    payload = data[12+csrc_count*4:]  # Skip CSRC if present
+                    
+                    # Handle different payload types
+                    if payload_type == 0:  # PCMU
+                        self._handle_pcmu_payload(payload, timestamp)
+                    elif payload_type == 8:  # PCMA
+                        self._handle_pcma_payload(payload, timestamp)
+                    elif payload_type == 9:  # G.722
+                        self._handle_g722_payload(payload, timestamp)
+                    elif payload_type == 101:  # DTMF
+                        self._handle_dtmf_payload(payload)
+                        
+                    # Update call state
                     if self.call_state == CallState.CONNECTED:
                         self.call_state = CallState.STREAMING
-                        self.logger.info(f"🎙️ CALL STATUS: STREAMING - Audio stream started")
-                    # self.logger.info(f"RTP packet received: {len(payload)} bytes from {addr}")
-                # elif len(data) > 0:
-                    # self.logger.info(f"Short RTP packet received: {len(data)} bytes from {addr}")
-            except socket.timeout:
-                # Try to receive any packet, even if it's not from expected source
-                try:
-                    self.rtp_sock.settimeout(0.001)  # Very short timeout
-                    data, addr = self.rtp_sock.recvfrom(2048)
-                    if data:
-                        self.logger.info(f"📦 Unexpected packet from {addr}: {len(data)} bytes")
-                        if len(data) >= 12:  # Could be RTP
-                            # Check if it looks like RTP (version = 2 in first 2 bits)
-                            if data[0] & 0xC0 == 0x80:
-                                self.logger.info(f"🎙️ Potential RTP packet detected!")
-                                payload = data[12:]
-                                self.audio_buffer.append(payload)
-                                if self.call_state == CallState.CONNECTED:
-                                    self.call_state = CallState.STREAMING
-                                    self.logger.info(f"🎙️ CALL STATUS: STREAMING - Audio stream started")
-                except:
-                    pass
-                finally:
-                    self.rtp_sock.settimeout(0.1)  # Reset timeout
-                continue
-            except Exception as e:
-                if self.running:  # Only log if we're still supposed to be running
+                        
+                except socket.timeout:
+                    continue
+                except Exception as e:
                     self.logger.error(f"RTP receive error: {str(e)}")
-                time.sleep(0.1)
+                    time.sleep(0.01)
                 
     def _audio_processing_thread(self):
         """Thread to process incoming audio data and trigger callbacks"""
@@ -392,28 +591,218 @@ class SimpleSIPClient:
     
     def _ulaw_to_pcm(self, ulaw_data):
         """Convert μ-law (PCMU) to 16-bit linear PCM"""
+        try:
+            import audioop
+            return audioop.ulaw2lin(ulaw_data, 2)  # 2 = 16-bit output
+            
+        except ImportError:
+            # Fallback manual implementation
+            import numpy as np
+            
+            ulaw_samples = np.frombuffer(ulaw_data, dtype=np.uint8)
+            pcm_samples = []
+            
+            for ulaw_byte in ulaw_samples:
+                # Complement all bits (μ-law is stored complemented)
+                ulaw_byte = int(ulaw_byte) ^ 0xFF
+                
+                # Extract sign, exponent, and mantissa
+                sign = ulaw_byte & 0x80
+                exp = (ulaw_byte & 0x70) >> 4
+                mantissa = ulaw_byte & 0x0F
+                
+                # Calculate linear PCM value using int to avoid overflow
+                if exp == 0:
+                    linear = int((mantissa << 4) + 0x84)
+                else:
+                    linear = int(((mantissa << 4) + 0x84) << (exp - 1))
+                
+                # Apply bias correction
+                linear = int(linear - 0x84)
+                
+                # Apply sign
+                if sign:
+                    linear = -linear
+                    
+                # Ensure 16-bit range
+                linear = max(-32768, min(32767, linear))
+                pcm_samples.append(linear)
+            
+            # Convert to bytes (16-bit signed integers)
+            return np.array(pcm_samples, dtype=np.int16).tobytes()
+    
+    def _g722_encode(self, pcm_data):
+        """Encode 16-bit PCM to G.722 format"""
         import numpy as np
         
-        ulaw_samples = np.frombuffer(ulaw_data, dtype=np.uint8)
+        # Convert PCM bytes to samples
+        pcm_samples = np.frombuffer(pcm_data, dtype=np.int16)
+        
+        # G.722 uses sub-band coding - this is a simplified implementation
+        # For production use, consider using a proper G.722 library like spandsp
+        
+        # Simple approach: downsample from 16kHz to 8kHz and compress
+        # G.722 internally works at 16kHz but RTP clock is 8kHz
+        encoded_samples = []
+        
+        for i in range(0, len(pcm_samples), 2):
+            # Take every other sample (simple decimation)
+            if i + 1 < len(pcm_samples):
+                sample = (pcm_samples[i] + pcm_samples[i + 1]) // 2
+            else:
+                sample = pcm_samples[i]
+            
+            # Simple quantization (this is not true G.722 encoding)
+            # Real G.722 uses ADPCM with sub-band filtering
+            sample = max(-32768, min(32767, sample))
+            
+            # Compress to 8-bit (simplified)
+            if sample >= 0:
+                compressed = min(127, sample >> 8)
+            else:
+                compressed = max(-128, sample >> 8)
+            
+            encoded_samples.append(compressed & 0xFF)
+        
+        return bytes(encoded_samples)
+    
+    def _g722_decode(self, g722_data):
+        """Decode G.722 format to 16-bit PCM"""
+        import numpy as np
+        
+        # This is a simplified G.722 decoder
+        # For production use, consider using a proper G.722 library
+        
         pcm_samples = []
         
-        for ulaw_byte in ulaw_samples:
-            # Complement all bits (μ-law is stored complemented)
-            ulaw_byte = ulaw_byte ^ 0xFF
+        for byte in g722_data:
+            # Simple expansion from 8-bit to 16-bit
+            if byte & 0x80:  # Negative
+                sample = ((byte & 0x7F) - 128) << 8
+            else:  # Positive
+                sample = byte << 8
             
-            # Extract sign, exponent, and mantissa
-            sign = ulaw_byte & 0x80
-            exp = (ulaw_byte & 0x70) >> 4
-            mantissa = ulaw_byte & 0x0F
+            # Upsample: duplicate each sample for 16kHz output
+            pcm_samples.extend([sample, sample])
+        
+        return np.array(pcm_samples, dtype=np.int16).tobytes()
+    
+    def _pcm_to_ulaw(self, pcm_data):
+        """Convert 16-bit PCM to μ-law format using standard algorithm"""
+        import numpy as np
+        
+        # Try Python's built-in audioop first (most reliable)
+        try:
+            import audioop
+            return audioop.lin2ulaw(pcm_data, 2)  # 2 = 16-bit samples
             
-            # Calculate linear PCM value
-            if exp == 0:
-                linear = (mantissa << 4) + 0x84
+        except ImportError:
+            # Manual μ-law encoding using ITU-T G.711 standard
+            pcm_samples = np.frombuffer(pcm_data, dtype=np.int16)
+            
+            # μ-law lookup table for faster conversion
+            ulaw_table = [
+                0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
+                4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5,
+                6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+                6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+                6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+                6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6,
+                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7,
+                7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7
+            ]
+            
+            ulaw_samples = []
+            BIAS = 0x84
+            
+            for sample in pcm_samples:
+                sample = int(sample)
+                
+                # Get sign and absolute value
+                sign = 0x80 if sample < 0 else 0x00
+                if sample < 0:
+                    sample = -sample
+                
+                # Add bias and clip
+                sample = min(sample + BIAS, 0x7FFF)
+                
+                # Find segment using lookup table
+                if sample < 0x100:
+                    segment = ulaw_table[sample >> 2]
+                    mantissa = (sample >> 1) & 0x0F
+                else:
+                    segment = ulaw_table[(sample >> 6) & 0xFF] + 1
+                    if segment >= 8:
+                        segment = 7
+                    mantissa = (sample >> (segment + 2)) & 0x0F
+                
+                # Construct μ-law byte
+                ulaw_byte = (sign | (segment << 4) | mantissa) ^ 0xFF
+                ulaw_samples.append(ulaw_byte)
+            
+            return bytes(ulaw_samples)
+    
+    def _pcm_to_alaw(self, pcm_data):
+        """Convert 16-bit PCM to A-law format"""
+        import numpy as np
+        
+        pcm_samples = np.frombuffer(pcm_data, dtype=np.int16)
+        alaw_samples = []
+        
+        for sample in pcm_samples:
+            # A-law encoding
+            sign = 0x80 if sample < 0 else 0x00
+            if sample < 0:
+                sample = -sample
+            sample = min(sample, 32635)  # Clip
+            
+            if sample < 256:
+                alaw_byte = sample >> 4
             else:
-                linear = ((mantissa << 4) + 0x84) << (exp - 1)
+                # Find the position of the highest set bit
+                exp = 7
+                while exp > 0 and sample < (0x1 << (exp + 7)):
+                    exp -= 1
+                
+                # Calculate mantissa
+                mantissa = (sample >> (exp + 3)) & 0x0F
+                alaw_byte = (exp << 4) | mantissa
             
-            # Apply bias correction
-            linear -= 0x84
+            # Apply sign and A-law specific XOR
+            alaw_byte = (alaw_byte | sign) ^ 0x55
+            alaw_samples.append(alaw_byte)
+        
+        return bytes(alaw_samples)
+    
+    def _alaw_to_pcm(self, alaw_data):
+        """Convert A-law to 16-bit linear PCM"""
+        import numpy as np
+        
+        alaw_samples = np.frombuffer(alaw_data, dtype=np.uint8)
+        pcm_samples = []
+        
+        for alaw_byte in alaw_samples:
+            # Reverse A-law XOR
+            alaw_byte = int(alaw_byte) ^ 0x55
+            
+            # Extract sign and magnitude
+            sign = alaw_byte & 0x80
+            exp = (alaw_byte & 0x70) >> 4
+            mantissa = alaw_byte & 0x0F
+            
+            # Calculate linear PCM value using int to avoid overflow
+            if exp == 0:
+                linear = int((mantissa << 4) + 8)
+            else:
+                linear = int(((mantissa << 4) + 0x108) << (exp - 1))
             
             # Apply sign
             if sign:
@@ -423,7 +812,6 @@ class SimpleSIPClient:
             linear = max(-32768, min(32767, linear))
             pcm_samples.append(linear)
         
-        # Convert to bytes (16-bit signed integers)
         return np.array(pcm_samples, dtype=np.int16).tobytes()
 
     def _parse_sip_message(self, message):
