@@ -55,14 +55,6 @@ Contents
    examples
    codecs
 
-API Reference
--------------
-
-.. toctree::
-   :maxdepth: 2
-   
-   api/simplesip
-
 Indices and tables
 ==================
 
