@@ -7,7 +7,7 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = 'SimpleSIP'
-copyright = '2025, Awais Khan'
+copyright = '2025, Awais Khan <contact@awaiskhan.com.pk>'
 author = 'Awais Khan'
 release = '0.1.1'
 
