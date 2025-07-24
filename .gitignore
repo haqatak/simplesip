@@ -7,5 +7,7 @@ wheels/
 *.egg-info
 .pypirc
 
+.twine
+
 # Virtual environments
 .venv
