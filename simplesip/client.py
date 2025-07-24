@@ -47,7 +47,6 @@ class SimpleSIPClient:
         self.audio_callback_format = 'pcmu'  # 'pcmu' or 'pcm'
         
         # *** CRITICAL 491 FIXES ***
-        # Track sent requests to prevent duplicates
         self.sent_invites = set()
         self.last_response_time = {}
         self.invite_in_progress = False
@@ -79,7 +78,6 @@ class SimpleSIPClient:
         try:
             self.local_ip = self.get_local_ip()
             
-            # Bind to specific IP instead of 0.0.0.0 for better NAT handling
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.sock.bind((self.local_ip, 5060))
             self.sock.settimeout(0.5)  # Reduced timeout for faster 491 response
@@ -91,7 +89,6 @@ class SimpleSIPClient:
             self.rtp_sock.bind((self.local_ip, self.local_rtp_port))
             self.rtp_sock.settimeout(0.1)
             self.rtp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            # Set socket to receive broadcast packets (in case of multicast RTP)
             self.rtp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             self.logger.info(f"RTP socket bound to {self.local_ip}:{self.local_rtp_port}")
             
@@ -114,7 +111,6 @@ class SimpleSIPClient:
         while self.running:
             time.sleep(30)  # Send keepalive every 30 seconds
             if self.call_id and self.remote_rtp_info:
-                # Send empty RTP keepalive packet
                 try:
                     header = struct.pack('!BBHII', 
                                         0x80, 0, self.rtp_seq, 
@@ -186,7 +182,6 @@ class SimpleSIPClient:
         session_id = int(time.time())
         
         if diagnostic:
-            # Comprehensive codec offer to test server support
             sdp = (f"v=0\r\n"
                 f"o={self.username} {session_id} 1 IN IP4 {self.local_ip}\r\n"
                 f"s=SIP Call\r\n"
@@ -206,7 +201,6 @@ class SimpleSIPClient:
                 f"a=fmtp:101 0-16\r\n"
                 f"a=sendrecv\r\n")
         else:
-            # Standard G.722 preferred offer
             sdp = (f"v=0\r\n"
                 f"o={self.username} {session_id} 1 IN IP4 {self.local_ip}\r\n"
                 f"s=SIP Call\r\n"
@@ -241,12 +235,10 @@ class SimpleSIPClient:
                     try:
                         port = int(parts[1])
                         rtp_profile = parts[2]  # RTP/AVP, RTP/SAVPF, etc.
-                        # Extract payload types from media line
                         payload_types = [int(pt) for pt in parts[3:] if pt.isdigit()]
                     except ValueError:
                         continue
             elif line.startswith('a=rtpmap:'):
-                # Parse codec mappings
                 parts = line[9:].split(' ', 1)
                 if len(parts) == 2:
                     pt = int(parts[0])
@@ -254,15 +246,12 @@ class SimpleSIPClient:
                     codec_name = codec_info.split('/')[0].upper()
                     codec_map[pt] = codec_name
             elif line.startswith('a=candidate:'):
-                # Parse ICE candidates for potential RTP endpoints
                 ice_candidates.append(line)
         
-        # Determine negotiated codec (first payload type in answer)
         if payload_types and codec_map:
             self.negotiated_payload_type = payload_types[0]
             self.negotiated_codec = codec_map.get(self.negotiated_payload_type, 'UNKNOWN')
             
-            # Show codec negotiation result with appropriate emoji
             if self.negotiated_codec == 'G722':
                 self.logger.info(f"🎵 ✅ G.722 codec negotiated! (PT {self.negotiated_payload_type}) - High quality 16kHz audio")
                 self.audio_sample_rate = 16000  # G.722 uses 16kHz internally
@@ -280,7 +269,6 @@ class SimpleSIPClient:
                     self.logger.warning(f"⚠️  Server wants secure RTP ({rtp_profile}) but client only supports plain RTP/AVP")
                     self.logger.warning(f"⚠️  RTP packets may not be received due to encryption/ICE requirements")
                     
-                    # Try to find alternative RTP endpoint from ICE candidates
                     if ice_candidates:
                         self.logger.info(f"🧊 Trying to find plain RTP endpoint from {len(ice_candidates)} ICE candidates...")
                         for candidate in ice_candidates[:3]:  # Try first 3 candidates
@@ -296,7 +284,6 @@ class SimpleSIPClient:
             return
             
         try:
-            # Send empty RTP packet as connectivity test
             header = struct.pack('!BBHII', 
                                 0x80,  # Version=2, Padding=0, Extension=0, CC=0
                                 0,     # Marker=0, Payload Type=0 (PCMU)
@@ -307,13 +294,11 @@ class SimpleSIPClient:
             self.rtp_sock.sendto(header, self.remote_rtp_info)
             self.logger.info(f"📤 Test RTP packet sent to {self.remote_rtp_info}")
             
-            # Update sequence
             self.rtp_seq = (self.rtp_seq + 1) % 65536
             
         except Exception as e:
             self.logger.error(f"Error sending test RTP packet: {str(e)}")
             
-        # Also try sending with different configurations after delay
         import threading
         threading.Timer(2.0, self._send_multiple_rtp_tests).start()
     
@@ -330,10 +315,8 @@ class SimpleSIPClient:
         
         for port_offset, port in enumerate(test_ports):
             try:
-                # Test different RTP configurations
                 test_endpoint = (self.remote_rtp_info[0], port)
                 
-                # Send test packet with different payload types
                 for pt in [0, 8]:  # PCMU and PCMA
                     header = struct.pack('!BBHII', 
                                         0x80,  # Version=2
@@ -342,7 +325,6 @@ class SimpleSIPClient:
                                         self.rtp_timestamp,
                                         self.rtp_ssrc)
                     
-                    # Send with small payload
                     payload = bytes([0x80] * 20)  # Short silence
                     self.rtp_sock.sendto(header + payload, test_endpoint)
                     self.logger.info(f"🔍 Test RTP PT{pt} sent to {test_endpoint}")
@@ -358,11 +340,9 @@ class SimpleSIPClient:
             return
             
         try:
-            # Use negotiated codec, fallback to PCMU
             payload_type = self.negotiated_payload_type or 0
             codec = self.negotiated_codec or 'PCMU'
             
-            # Encode audio based on negotiated codec
             if codec == 'G722':
                 encoded_data = self._g722_encode(audio_data)
                 samples_per_packet = 160  # G.722 RTP clock is still 8kHz
@@ -373,21 +353,18 @@ class SimpleSIPClient:
                 encoded_data = self._pcm_to_ulaw(audio_data)
                 samples_per_packet = 160
             
-            # Calculate chunk size based on encoded data
             if codec == 'G722':
-                chunk_size = 80  # G.722 produces half the bytes due to compression
+                chunk_size = 80
             else:
                 chunk_size = samples_per_packet  # PCMU/PCMA: 160 bytes for 20ms
             
             self.logger.debug(f"Audio: {len(encoded_data)} bytes encoded, {chunk_size} bytes per packet")
             
-            # Split encoded audio into proper sized chunks
             for i in range(0, len(encoded_data), chunk_size):
                 chunk = encoded_data[i:i+chunk_size]
                 if not chunk:
                     continue
                     
-                # Create RTP header with correct payload type
                 header = struct.pack('!BBHII', 
                                     0x80,  # Version=2, P=0, X=0, CC=0
                                     payload_type,  # Use negotiated payload type
@@ -395,14 +372,11 @@ class SimpleSIPClient:
                                     self.rtp_timestamp,
                                     self.rtp_ssrc)
                 
-                # Send packet
                 self.rtp_sock.sendto(header + chunk, self.remote_rtp_info)
                 
-                # Update sequence and timestamp
                 self.rtp_seq = (self.rtp_seq + 1) % 65536
                 self.rtp_timestamp += samples_per_packet
                 
-                # Maintain timing (20ms between packets)
                 time.sleep(0.02)
                 
         except Exception as e:
@@ -413,10 +387,8 @@ class SimpleSIPClient:
         if not payload:
             return
             
-        # Convert to PCM
         pcm_data = self._ulaw_to_pcm(payload)
         
-        # Add to jitter buffer
         self._add_to_jitter_buffer(pcm_data, timestamp)
     
     def _handle_pcma_payload(self, payload, timestamp):
@@ -424,10 +396,8 @@ class SimpleSIPClient:
         if not payload:
             return
             
-        # Convert to PCM
         pcm_data = self._alaw_to_pcm(payload)
         
-        # Add to jitter buffer
         self._add_to_jitter_buffer(pcm_data, timestamp)
     
     def _handle_g722_payload(self, payload, timestamp):
@@ -435,10 +405,8 @@ class SimpleSIPClient:
         if not payload:
             return
             
-        # Convert G.722 to PCM
         pcm_data = self._g722_decode(payload)
         
-        # Add to jitter buffer
         self._add_to_jitter_buffer(pcm_data, timestamp)
     
     def _handle_dtmf_payload(self, payload):
@@ -459,34 +427,26 @@ class SimpleSIPClient:
         
     def _add_to_jitter_buffer(self, pcm_data, timestamp):
         """Manage jitter buffer for smooth playback"""
-        # Simple jitter buffer implementation
         now = time.time() * 1000  # Current time in ms
         
-        # Calculate expected playout time
         if not hasattr(self, '_first_rtp_timestamp'):
             self._first_rtp_timestamp = timestamp
             self._first_rtp_time = now
             
-        # Calculate when this packet should be played
         time_offset = (timestamp - self._first_rtp_timestamp) / 8  # 8kHz = 8000 samples/sec
         play_time = self._first_rtp_time + time_offset
         
-        # Simple adaptive jitter buffer
         current_delay = max(0, play_time - now)
         target_delay = 50  # ms - adjust based on network conditions
         
         if current_delay < target_delay:
-            # Packet arrived late - either drop or play immediately
             play_time = now
         elif current_delay > target_delay * 2:
-            # Packet arrived very early - adjust buffer
             self._first_rtp_time -= (current_delay - target_delay)
             play_time = self._first_rtp_time + time_offset
         
-        # Schedule for playout
         if self.audio_received_callback:
             try:
-                # For demo, just call immediately - in real app use proper timing
                 self.audio_received_callback(pcm_data, 'pcm', play_time)
             except Exception as e:
                 self.logger.error(f"Audio callback error: {str(e)}")
@@ -495,7 +455,6 @@ class SimpleSIPClient:
             """Improved RTP receive thread with jitter buffer"""
             self.logger.info("🎙️ Enhanced RTP receive thread started")
             
-            # Jitter buffer configuration
             jitter_buffer_size = 50  # ms
             last_seq = None
             last_timestamp = None
@@ -506,7 +465,6 @@ class SimpleSIPClient:
                     if len(data) < 12:  # Minimum RTP header size
                         continue
                         
-                    # Parse RTP header
                     header = struct.unpack('!BBHII', data[:12])
                     version = (header[0] >> 6) & 0x03
                     padding = (header[0] >> 5) & 0x01
@@ -518,20 +476,16 @@ class SimpleSIPClient:
                     timestamp = header[3]
                     ssrc = header[4]
                     
-                    # Handle sequence discontinuities (packet loss)
                     if last_seq is not None:
                         diff = (sequence - last_seq) % 65536
                         if diff > 1:
                             self.logger.debug(f"Packet loss detected: {diff-1} packets")
-                            # Insert silence for lost packets if needed
                             
                     last_seq = sequence
                     last_timestamp = timestamp
                     
-                    # Process payload
                     payload = data[12+csrc_count*4:]  # Skip CSRC if present
                     
-                    # Handle different payload types
                     if payload_type == 0:  # PCMU
                         self._handle_pcmu_payload(payload, timestamp)
                     elif payload_type == 8:  # PCMA
@@ -557,15 +511,12 @@ class SimpleSIPClient:
             if self.audio_buffer:
                 pcmu_data = self.audio_buffer.popleft()
                 
-                # Trigger audio callback if registered
                 if self.audio_received_callback:
                     try:
                         if self.audio_callback_format == 'pcm':
-                            # Convert PCMU to PCM for callback
                             pcm_data = self._ulaw_to_pcm(pcmu_data)
                             self.audio_received_callback(pcm_data, 'pcm')
                         else:
-                            # Pass raw PCMU data
                             self.audio_received_callback(pcmu_data, 'pcmu')
                     except Exception as e:
                         self.logger.error(f"Error in audio callback: {str(e)}")
@@ -596,67 +547,49 @@ class SimpleSIPClient:
             return audioop.ulaw2lin(ulaw_data, 2)  # 2 = 16-bit output
             
         except ImportError:
-            # Fallback manual implementation
             import numpy as np
             
             ulaw_samples = np.frombuffer(ulaw_data, dtype=np.uint8)
             pcm_samples = []
             
             for ulaw_byte in ulaw_samples:
-                # Complement all bits (μ-law is stored complemented)
                 ulaw_byte = int(ulaw_byte) ^ 0xFF
                 
-                # Extract sign, exponent, and mantissa
                 sign = ulaw_byte & 0x80
                 exp = (ulaw_byte & 0x70) >> 4
                 mantissa = ulaw_byte & 0x0F
                 
-                # Calculate linear PCM value using int to avoid overflow
                 if exp == 0:
                     linear = int((mantissa << 4) + 0x84)
                 else:
                     linear = int(((mantissa << 4) + 0x84) << (exp - 1))
                 
-                # Apply bias correction
                 linear = int(linear - 0x84)
                 
-                # Apply sign
                 if sign:
                     linear = -linear
                     
-                # Ensure 16-bit range
                 linear = max(-32768, min(32767, linear))
                 pcm_samples.append(linear)
             
-            # Convert to bytes (16-bit signed integers)
             return np.array(pcm_samples, dtype=np.int16).tobytes()
     
     def _g722_encode(self, pcm_data):
         """Encode 16-bit PCM to G.722 format"""
         import numpy as np
         
-        # Convert PCM bytes to samples
         pcm_samples = np.frombuffer(pcm_data, dtype=np.int16)
         
-        # G.722 uses sub-band coding - this is a simplified implementation
-        # For production use, consider using a proper G.722 library like spandsp
-        
-        # Simple approach: downsample from 16kHz to 8kHz and compress
-        # G.722 internally works at 16kHz but RTP clock is 8kHz
         encoded_samples = []
         
         for i in range(0, len(pcm_samples), 2):
-            # Take every other sample (simple decimation)
             if i + 1 < len(pcm_samples):
                 sample = (pcm_samples[i] + pcm_samples[i + 1]) // 2
             else:
                 sample = pcm_samples[i]
             
-            # Simple quantization (this is not true G.722 encoding)
-            # Real G.722 uses ADPCM with sub-band filtering
             sample = max(-32768, min(32767, sample))
             
-            # Compress to 8-bit (simplified)
             if sample >= 0:
                 compressed = min(127, sample >> 8)
             else:
@@ -670,19 +603,15 @@ class SimpleSIPClient:
         """Decode G.722 format to 16-bit PCM"""
         import numpy as np
         
-        # This is a simplified G.722 decoder
-        # For production use, consider using a proper G.722 library
         
         pcm_samples = []
         
         for byte in g722_data:
-            # Simple expansion from 8-bit to 16-bit
             if byte & 0x80:  # Negative
                 sample = ((byte & 0x7F) - 128) << 8
             else:  # Positive
                 sample = byte << 8
             
-            # Upsample: duplicate each sample for 16kHz output
             pcm_samples.extend([sample, sample])
         
         return np.array(pcm_samples, dtype=np.int16).tobytes()
@@ -691,16 +620,13 @@ class SimpleSIPClient:
         """Convert 16-bit PCM to μ-law format using standard algorithm"""
         import numpy as np
         
-        # Try Python's built-in audioop first (most reliable)
         try:
             import audioop
             return audioop.lin2ulaw(pcm_data, 2)  # 2 = 16-bit samples
             
         except ImportError:
-            # Manual μ-law encoding using ITU-T G.711 standard
             pcm_samples = np.frombuffer(pcm_data, dtype=np.int16)
             
-            # μ-law lookup table for faster conversion
             ulaw_table = [
                 0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3,
                 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
@@ -726,15 +652,12 @@ class SimpleSIPClient:
             for sample in pcm_samples:
                 sample = int(sample)
                 
-                # Get sign and absolute value
                 sign = 0x80 if sample < 0 else 0x00
                 if sample < 0:
                     sample = -sample
                 
-                # Add bias and clip
                 sample = min(sample + BIAS, 0x7FFF)
                 
-                # Find segment using lookup table
                 if sample < 0x100:
                     segment = ulaw_table[sample >> 2]
                     mantissa = (sample >> 1) & 0x0F
@@ -744,7 +667,6 @@ class SimpleSIPClient:
                         segment = 7
                     mantissa = (sample >> (segment + 2)) & 0x0F
                 
-                # Construct μ-law byte
                 ulaw_byte = (sign | (segment << 4) | mantissa) ^ 0xFF
                 ulaw_samples.append(ulaw_byte)
             
@@ -758,7 +680,6 @@ class SimpleSIPClient:
         alaw_samples = []
         
         for sample in pcm_samples:
-            # A-law encoding
             sign = 0x80 if sample < 0 else 0x00
             if sample < 0:
                 sample = -sample
@@ -767,16 +688,13 @@ class SimpleSIPClient:
             if sample < 256:
                 alaw_byte = sample >> 4
             else:
-                # Find the position of the highest set bit
                 exp = 7
                 while exp > 0 and sample < (0x1 << (exp + 7)):
                     exp -= 1
                 
-                # Calculate mantissa
                 mantissa = (sample >> (exp + 3)) & 0x0F
                 alaw_byte = (exp << 4) | mantissa
             
-            # Apply sign and A-law specific XOR
             alaw_byte = (alaw_byte | sign) ^ 0x55
             alaw_samples.append(alaw_byte)
         
@@ -790,25 +708,20 @@ class SimpleSIPClient:
         pcm_samples = []
         
         for alaw_byte in alaw_samples:
-            # Reverse A-law XOR
             alaw_byte = int(alaw_byte) ^ 0x55
             
-            # Extract sign and magnitude
             sign = alaw_byte & 0x80
             exp = (alaw_byte & 0x70) >> 4
             mantissa = alaw_byte & 0x0F
             
-            # Calculate linear PCM value using int to avoid overflow
             if exp == 0:
                 linear = int((mantissa << 4) + 8)
             else:
                 linear = int(((mantissa << 4) + 0x108) << (exp - 1))
             
-            # Apply sign
             if sign:
                 linear = -linear
                 
-            # Ensure 16-bit range
             linear = max(-32768, min(32767, linear))
             pcm_samples.append(linear)
         
@@ -827,7 +740,6 @@ class SimpleSIPClient:
                 key, value = line.split(':', 1)
                 headers[key.strip().lower()] = value.strip()
         
-        # Extract SDP body if present
         parts = message.split('\r\n\r\n', 1)
         if len(parts) > 1:
             headers['body'] = parts[1]
@@ -842,7 +754,6 @@ class SimpleSIPClient:
         call_id = request_headers.get('call-id', '')
         cseq = request_headers.get('cseq', '')
         
-        # Add tag to To header if not present in 200 OK
         if status_code == 200 and 'tag=' not in to_header:
             to_header += f';tag={self.tag}'
         
@@ -871,16 +782,13 @@ class SimpleSIPClient:
         from_header = invite_headers.get('from', '')
         call_id = invite_headers.get('call-id', '')
         
-        # Extract tags
         remote_tag = None
         if 'tag=' in to_header:
             remote_tag = to_header.split('tag=')[1].split(';')[0].split('>')[0]
         
-        # Extract CSeq number (not method)
         cseq_header = invite_headers.get('cseq', '')
         cseq_num = cseq_header.split()[0] if cseq_header else str(self.cseq)
         
-        # Construct proper request URI from Contact or From header
         contact = invite_headers.get('contact', '')
         if contact and '<sip:' in contact:
             request_uri = contact.split('<')[1].split('>')[0]
@@ -901,7 +809,6 @@ class SimpleSIPClient:
         
         self._send_message(msg)
         
-        # Store dialog info
         self.dialogs[call_id] = {
             'local_tag': self.tag,
             'remote_tag': remote_tag,
@@ -921,26 +828,21 @@ class SimpleSIPClient:
     
     def make_call(self, dest_number):
         """*** FIXED: Initiate a call with duplicate prevention ***"""
-        # CRITICAL: Prevent duplicate INVITE requests
         if self.invite_in_progress:
             return
             
         if self.call_id and self.call_state != CallState.IDLE:
             return
         
-        # Generate unique call identifiers
         self.call_id = f"{random.randint(100000, 999999)}@{self.local_ip}"
         invite_key = f"{self.call_id}:{dest_number}"
         
-        # Check if we've already sent this specific INVITE
         if invite_key in self.sent_invites:
                 return
         
-        # Mark INVITE as in progress
         self.invite_in_progress = True
         self.sent_invites.add(invite_key)
         
-        # Track when we last sent an INVITE to prevent rapid retries
         self.last_invite_time = datetime.now()
         
         branch = self._generate_branch()
@@ -986,13 +888,10 @@ class SimpleSIPClient:
             self.logger.error("No WWW-Authenticate header in 401 response")
             return
         
-        # Parse auth parameters more robustly
         auth_params = {}
-        # Handle both Digest and Basic auth
         if www_auth.startswith('Digest'):
-            auth_string = www_auth[6:].strip()  # Remove 'Digest'
+            auth_string = www_auth[6:].strip()
             
-            # Split by comma but handle quoted values
             parts = re.findall(r'(\w+)=(?:"([^"]*)"|([^,\s]+))', auth_string)
             for key, quoted_val, unquoted_val in parts:
                 auth_params[key.lower()] = quoted_val or unquoted_val
@@ -1010,7 +909,6 @@ class SimpleSIPClient:
         if call_id in self.current_transactions:
             transaction = self.current_transactions[call_id]
             if transaction['type'] == 'INVITE':
-                # Clear duplicate tracking for auth retry
                 if 'invite_key' in transaction:
                     self.sent_invites.discard(transaction['invite_key'])
                 self._retry_invite_with_auth(transaction['dest_number'], call_id)
@@ -1029,7 +927,6 @@ class SimpleSIPClient:
         ha2 = hashlib.md5(f"{method}:{uri}".encode()).hexdigest()
         
         if self.auth_info.get('qop'):
-            # With qop, include nc and cnonce
             nc = "00000001"
             cnonce = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
             response = hashlib.md5(
@@ -1058,7 +955,6 @@ class SimpleSIPClient:
         
         sdp_body = self._generate_sdp_offer()
         
-        # Build auth header
         auth_header = f'Digest username="{self.username}", realm="{self.auth_info["realm"]}", ' \
                      f'nonce="{self.auth_info["nonce"]}", uri="{uri}", ' \
                      f'response="{response}", algorithm={self.auth_info["algorithm"]}'
@@ -1085,7 +981,6 @@ class SimpleSIPClient:
               f"Content-Length: {len(sdp_body)}\r\n\r\n" \
               f"{sdp_body}"
         
-        # Update transaction for auth retry
         invite_key_auth = f"{call_id}:{dest_number}:auth"
         self.sent_invites.add(invite_key_auth)
         
@@ -1110,7 +1005,6 @@ class SimpleSIPClient:
             self.logger.error("Failed to calculate auth response")
             return
         
-        # Build auth header
         auth_header = f'Digest username="{self.username}", realm="{self.auth_info["realm"]}", ' \
                      f'nonce="{self.auth_info["nonce"]}", uri="{uri}", ' \
                      f'response="{response}", algorithm={self.auth_info["algorithm"]}"'
@@ -1143,7 +1037,6 @@ class SimpleSIPClient:
             try:
                 data, addr = self.sock.recvfrom(4096)
                 message = data.decode()
-                # Log all SIP messages for debugging
                 first_line = message.split('\r\n')[0] if message else ''
                 self.logger.info(f"📥 SIP MESSAGE: {first_line}")
                 self._handle_message(message)
@@ -1163,37 +1056,29 @@ class SimpleSIPClient:
         headers = self._parse_sip_message(message)
         first_line = headers.get('start_line', '')
         
-        # *** CRITICAL: Handle 491 Request Pending ***
         if "SIP/2.0 491 Request Pending" in first_line:
             call_id = headers.get('call-id', '')
             
-            # Send ACK to acknowledge the 491 response
             self._send_491_ack(headers)
             
-            # Clean up transaction and prevent further retransmissions
             if call_id in self.current_transactions:
                 transaction = self.current_transactions[call_id]
                 if 'invite_key' in transaction:
                     self.sent_invites.discard(transaction['invite_key'])
-                # Don't delete transaction if we're in RINGING - we need it for 200 OK
                 if self.call_state == CallState.INVITING:
                     del self.current_transactions[call_id]
                 else:
-                    # Just stop retransmissions but keep transaction for 200 OK
                     transaction['retries'] = 999  # Prevent further retries
             
-            # Don't reset call state if we're already ringing - just stop retransmissions
             if self.call_state == CallState.INVITING:
                 self.invite_in_progress = False
                 self.call_id = None
                 self.call_state = CallState.IDLE
                 self.logger.info(f"❌ CALL STATUS: IDLE - 491 Request Pending, call reset")
             else:
-                # We're in ringing/connected state - just acknowledge 491 but keep the call
                 self.logger.info(f"⚠️  491 Request Pending acknowledged - maintaining call state {self.call_state.value}")
             return
         
-        # Handle other messages
         if "SIP/2.0 401 Unauthorized" in first_line:
             self._handle_401_unauthorized(message)
         elif "SIP/2.0 200 OK" in first_line:
@@ -1226,10 +1111,8 @@ class SimpleSIPClient:
         from_header = response_headers.get('from', '')
         call_id = response_headers.get('call-id', '')
         
-        # Get CSeq number
         cseq_num = cseq_header.split()[0]
         
-        # Use original request URI
         request_uri = f"sip:{self.username}@{self.server}"
         
         branch = self._generate_branch()
@@ -1282,44 +1165,34 @@ class SimpleSIPClient:
             transaction = self.current_transactions[call_id]
             
             if transaction['type'] == 'INVITE' and cseq_method == 'INVITE':
-                # Parse SDP answer from 200 OK
                 if 'body' in headers:
                     self._parse_sdp_answer(headers['body'])
                 
-                # Send ACK to complete call setup
                 self.send_ack(headers)
                 
-                # Clear invite in progress flag on successful call setup
                 self.invite_in_progress = False
                 self.call_state = CallState.CONNECTED
                 self.logger.info(f"✅ CALL STATUS: CONNECTED - Call established successfully")
                 
-                # Send test RTP packet to verify connection
                 self._send_test_rtp_packet()
                 
             elif transaction['type'] == 'REGISTER':
                 pass
                 
-            # Clean up completed transaction
             del self.current_transactions[call_id]
         else:
             self.logger.error(f"❌ No matching transaction found for Call-ID: {call_id}")
-            # Still try to handle 200 OK even without transaction if it's for our current call
             if call_id == self.call_id and cseq_method == 'INVITE':
                 self.logger.info(f"🔧 Handling 200 OK without transaction for current call")
-                # Parse SDP answer from 200 OK
                 if 'body' in headers:
                     self._parse_sdp_answer(headers['body'])
                 
-                # Send ACK to complete call setup
                 self.send_ack(headers)
                 
-                # Clear invite in progress flag on successful call setup
                 self.invite_in_progress = False
                 self.call_state = CallState.CONNECTED
                 self.logger.info(f"✅ CALL STATUS: CONNECTED - Call established successfully")
                 
-                # Send test RTP packet to verify connection
                 self._send_test_rtp_packet()
 
     def _handle_incoming_invite(self, message, headers):
@@ -1329,42 +1202,35 @@ class SimpleSIPClient:
         if call_id:
             self.call_id = call_id
         
-        # Parse SDP offer
         if 'body' in headers:
             self._parse_sdp_answer(headers['body'])
         
-        # Send 180 Ringing
         additional_headers = {
             'User-Agent': 'BetterSIPClient/1.0',
             'Contact': f'<sip:{self.username}@{self.local_ip}:5060>'
         }
         self._send_response(headers, 180, 'Ringing', additional_headers)
         
-        # Auto-answer after 2 seconds (for testing)
         threading.Timer(2.0, lambda: self.answer_call(headers)).start()
         
     def _handle_bye(self, message, headers):
         """Enhanced BYE handling"""
         
-        # Send 200 OK response to BYE
         additional_headers = {
             'User-Agent': 'BetterSIPClient/1.0'
         }
         self._send_response(headers, 200, 'OK', additional_headers)
         
-        # Clean up call state
         call_id = headers.get('call-id', '')
         if call_id in self.dialogs:
             del self.dialogs[call_id]
         
-        # Clean up invite tracking
         self._cleanup_call_state()
         self.logger.info(f"📴 CALL STATUS: IDLE - Call terminated")
 
     def _cleanup_call_state(self):
         """*** NEW: Clean up call state and invite tracking ***"""
         if self.call_id:
-            # Remove invite tracking for this call
             invite_keys_to_remove = [k for k in self.sent_invites if self.call_id in k]
             for k in invite_keys_to_remove:
                 self.sent_invites.discard(k)
@@ -1383,33 +1249,26 @@ class SimpleSIPClient:
         for call_id, transaction in list(self.current_transactions.items()):
             elapsed = (now - transaction['start_time']).total_seconds()
             
-            # Reduced retry intervals to prevent 491 conflicts
             retry_intervals = [1.0, 2.0, 4.0]  # Slower retries
             
             if elapsed > 30:  # Shorter final timeout
                 timed_out.append(call_id)
                 
-                # Clean up invite state on timeout
                 if transaction['type'] == 'INVITE':
                     if 'invite_key' in transaction:
                         self.sent_invites.discard(transaction['invite_key'])
                     self.invite_in_progress = False
                 continue
             
-            # More conservative retransmission logic
             for i, interval in enumerate(retry_intervals):
                 if elapsed > interval and transaction['retries'] == i:
                     transaction['retries'] = i + 1
                     
                     if transaction['type'] == 'INVITE':
-                        # Don't retransmit INVITE if we've received provisional responses (180 Ringing)
-                        # or if call is already in RINGING or later state
                         if self.call_state in [CallState.RINGING, CallState.CONNECTED, CallState.STREAMING]:
                             continue  # Stop retransmissions once we get ringing
                             
-                        # Don't retransmit if we already have auth info or if invite is in progress
                         if not self.auth_info and not self.invite_in_progress:
-                            # Clear previous tracking before retry
                             if 'invite_key' in transaction:
                                 self.sent_invites.discard(transaction['invite_key'])
                             self.make_call(transaction['dest_number'])
@@ -1422,7 +1281,6 @@ class SimpleSIPClient:
                             self.register()
                     break
         
-        # Clean up completely timed out transactions
         for call_id in timed_out:
             del self.current_transactions[call_id]
 
@@ -1444,14 +1302,12 @@ class SimpleSIPClient:
             return self.local_ip
             
         try:
-            # Try to connect to the SIP server to determine local IP
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect((self.server, self.port))
             ip = s.getsockname()[0]
             s.close()
             return ip
         except Exception:
-            # Fallback methods
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 s.connect(('8.8.8.8', 80))
@@ -1490,7 +1346,6 @@ class SimpleSIPClient:
         self._send_message(msg)
         self.cseq += 1
         
-        # Clean up call state
         if call_id in self.dialogs:
             del self.dialogs[call_id]
         
@@ -1501,11 +1356,9 @@ class SimpleSIPClient:
         """Enhanced cleanup and disconnect"""
         self.running = False
         
-        # Hangup any active calls
         if self.call_id:
             self.hangup_call()
         
-        # Close sockets
         if self.sock:
             try:
                 self.sock.close()
@@ -1517,7 +1370,6 @@ class SimpleSIPClient:
             except:
                 pass
         
-        # Clear all tracking
         self.sent_invites.clear()
         self.current_transactions.clear()
         self.dialogs.clear()
@@ -1528,7 +1380,6 @@ class SimpleSIPClient:
         if not self.remote_rtp_info:
                 return
         
-        # DTMF payload (RFC2833)
         dtmf_map = {'0': 0, '1': 1, '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7, '8': 8, '9': 9, 
                    '*': 10, '#': 11, 'A': 12, 'B': 13, 'C': 14, 'D': 15}
         
@@ -1537,8 +1388,7 @@ class SimpleSIPClient:
         
         event = dtmf_map[digit]
         
-        # Send DTMF start
-        payload = struct.pack('!BBHH', event, 0x0A, 160, 0)  # Event, volume, duration
+        payload = struct.pack('!BBHH', event, 0x0A, 160, 0)
         header = struct.pack('!BBHII', 0x80, 101, self.rtp_seq, self.rtp_timestamp, self.rtp_ssrc)
         
         try:
@@ -1546,7 +1396,6 @@ class SimpleSIPClient:
             self.rtp_seq = (self.rtp_seq + 1) % 65536
             time.sleep(0.1)
             
-            # Send DTMF end
             payload = struct.pack('!BBHH', event, 0x8A, 800, 0)  # End event
             header = struct.pack('!BBHII', 0x80, 101, self.rtp_seq, self.rtp_timestamp, self.rtp_ssrc)
             self.rtp_sock.sendto(header + payload, self.remote_rtp_info)

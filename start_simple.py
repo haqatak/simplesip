@@ -9,7 +9,6 @@ import threading
 import audioop
 import pyaudio
 
-# Simple audio configuration for PCMU
 CHUNK = 160  # 20ms at 8kHz 
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
@@ -75,10 +74,8 @@ def audio_playback_thread():
     while running:
         if audio_queue and output_stream:
             try:
-                # Get audio data from queue
                 pcm_data = audio_queue.pop(0)
                 
-                # Play it
                 output_stream.write(pcm_data)
                 
             except Exception as e:
@@ -93,13 +90,10 @@ def audio_capture_thread():
     while running and client.running:
         if client.call_state.value in ['connected', 'streaming']:
             try:
-                # Read audio from mic
                 pcm_data = input_stream.read(CHUNK, exception_on_overflow=False)
                 
-                # Convert to μ-law using Python's built-in
                 ulaw_data = audioop.lin2ulaw(pcm_data, 2)
                 
-                # Send directly to RTP
                 if client.remote_rtp_info and len(ulaw_data) == 160:
                     # Create RTP header for PCMU (PT=0)
                     import struct
