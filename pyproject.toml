@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "simplesip"
-version = "0.1.1"
+version = "0.1.2"
 authors = [
     {name = "Awais khan", email = "contact@awaiskhan.com.pk"},
 ]
@@ -30,6 +30,7 @@ classifiers = [
 ]
 keywords = ["sip", "voip", "rtp", "audio", "streaming", "telephony", "simple"]
 dependencies = [
+    "g722>=1.2.1",
     "numpy>=1.19.0",
 ]
 

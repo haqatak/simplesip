@@ -1,25 +1,24 @@
 #!/usr/bin/env python3
 """
-Simple working PCMU audio client - no fancy stuff, just works
+Simplified SIP audio client - automatic codec handling
+The client automatically detects and handles both PCMU and G.722 codecs
 """
 
 from simplesip import SimpleSIPClient
 import time
 import threading
-import audioop
 import pyaudio
 
-CHUNK = 160  # 20ms at 8kHz 
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-RATE = 8000  # 8kHz for PCMU
-
-client = SimpleSIPClient("1004", "ba5cc9c1a2b8632caf467b326e9e27e6", "10.128.50.210")
+client = SimpleSIPClient("1001", "ba5cc9c1a2b8632caf467b326e9e27e6", "10.128.50.210")
 audio = None
 input_stream = None
 output_stream = None
 running = False
 audio_queue = []
+
+# Audio format (will be dynamically configured by client)
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
 
 def list_microphones():
     """List available microphones and let user choose"""
@@ -61,11 +60,13 @@ def list_microphones():
         except KeyboardInterrupt:
             return None
 
-def audio_receive_callback(pcm_data, format_type, play_time=None):
-    """Callback for received audio - add to playback queue"""
+def audio_receive_callback(audio_data, format_type, play_time=None, codec=None):
+    """Callback for received audio - client automatically handles codec decoding"""
     global audio_queue
+    
     if format_type == 'pcm':
-        audio_queue.append(pcm_data)
+        # Client has already decoded the audio to PCM
+        audio_queue.append(audio_data)
 
 def audio_playback_thread():
     """Thread to play received audio"""
@@ -75,49 +76,76 @@ def audio_playback_thread():
         if audio_queue and output_stream:
             try:
                 pcm_data = audio_queue.pop(0)
-                
                 output_stream.write(pcm_data)
-                
             except Exception as e:
                 print(f"Playback error: {e}")
         else:
             time.sleep(0.01)  # Short sleep when no audio
 
 def audio_capture_thread():
-    """Simple audio capture and transmission"""
+    """Audio capture - client automatically handles codec encoding"""
     global running
     
     while running and client.running:
         if client.call_state.value in ['connected', 'streaming']:
             try:
-                pcm_data = input_stream.read(CHUNK, exception_on_overflow=False)
+                # Get audio config from client
+                config = client.get_audio_config()
+                chunk_size = config['chunk_size']
                 
-                ulaw_data = audioop.lin2ulaw(pcm_data, 2)
+                # Read audio from microphone
+                pcm_data = input_stream.read(chunk_size, exception_on_overflow=False)
                 
-                if client.remote_rtp_info and len(ulaw_data) == 160:
-                    # Create RTP header for PCMU (PT=0)
-                    import struct
-                    header = struct.pack('!BBHII', 
-                                       0x80,  # Version=2
-                                       0,     # PT=0 (PCMU) 
-                                       client.rtp_seq,
-                                       client.rtp_timestamp,
-                                       client.rtp_ssrc)
-                    pass
-                    # Send RTP packet
-                    # client.rtp_sock.sendto(header + ulaw_data, client.remote_rtp_info)
-                    
-                    # Update counters
-                    # client.rtp_seq = (client.rtp_seq + 1) % 65536
-                    # client.rtp_timestamp += 160
+                # Send to client - it will automatically encode based on negotiated codec
+                client.send_audio(pcm_data)
                     
             except Exception as e:
                 print(f"Audio capture error: {e}")
                 
         time.sleep(0.02)  # 20ms
 
+def setup_audio_streams(mic_device_id=None):
+    """Setup audio streams using client's audio configuration"""
+    global audio, input_stream, output_stream
+    
+    # Get audio configuration from client
+    config = client.get_audio_config()
+    rate = config['sample_rate']
+    chunk_size = config['chunk_size']
+    
+    print(f"🎵 Setting up audio streams:")
+    print(f"   Codec: {config['codec']}")
+    print(f"   Sample Rate: {rate}Hz")
+    print(f"   Chunk Size: {chunk_size} samples")
+    
+    # Initialize audio
+    audio = pyaudio.PyAudio()
+    
+    # Open input stream (microphone)
+    input_kwargs = {
+        'format': FORMAT,
+        'channels': CHANNELS, 
+        'rate': rate,
+        'input': True,
+        'frames_per_buffer': chunk_size
+    }
+    
+    if mic_device_id is not None:
+        input_kwargs['input_device_index'] = mic_device_id
+        
+    input_stream = audio.open(**input_kwargs)
+    
+    # Open output stream (speakers)
+    output_stream = audio.open(
+        format=FORMAT,
+        channels=CHANNELS,
+        rate=rate,
+        output=True,
+        frames_per_buffer=chunk_size
+    )
+
 try:
-    print("🔊 Simple PCMU Audio Client")
+    print("🔊 SimpleSIP Audio Client - Automatic Codec Handling")
     print("Connecting...")
     
     # Connect and register
@@ -133,42 +161,26 @@ try:
         time.sleep(0.1)
     
     if client.call_state.value in ['connected', 'streaming']:
-        print(f"✅ Connected with {client.negotiated_codec}")
+        # Get negotiated codec information
+        config = client.get_audio_config()
+        print(f"✅ Connected with {config['codec']} codec")
+        
+        if config['codec'] == 'G722':
+            print("🎉 High-quality wideband audio active!")
+        else:
+            print(f"📻 Using {config['codec']} codec")
         
         # Choose microphone
         mic_device_id = list_microphones()
         
-        # Set up audio callback for receiving
-        client.set_audio_callback(audio_receive_callback, 'pcm')
+        # Set up audio callback for receiving (client handles codec decoding)
+        client.set_audio_callback(audio_receive_callback, 'g722')
         
-        # Initialize audio
-        audio = pyaudio.PyAudio()
-        
-        # Open input stream (microphone)
-        input_kwargs = {
-            'format': FORMAT,
-            'channels': CHANNELS, 
-            'rate': RATE,
-            'input': True,
-            'frames_per_buffer': CHUNK
-        }
-        
-        if mic_device_id is not None:
-            input_kwargs['input_device_index'] = mic_device_id
-            
-        input_stream = audio.open(**input_kwargs)
-        
-        # Open output stream (speakers)
-        output_stream = audio.open(
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=RATE,
-            output=True,
-            frames_per_buffer=CHUNK
-        )
+        # Setup audio streams with correct configuration
+        setup_audio_streams(mic_device_id)
         
         print("🎤 Audio started - you can now talk and hear!")
-        print("🔊 You should hear audio from extension 1002")
+        print("💡 Client automatically handles codec encoding/decoding")
         
         # Start audio threads
         running = True

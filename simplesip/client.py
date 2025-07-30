@@ -250,8 +250,9 @@ class SimpleSIPClient:
         
         if payload_types and codec_map:
             self.negotiated_payload_type = payload_types[0]
+            print(f"Negotiated Payload Type: {self.negotiated_payload_type}")
             self.negotiated_codec = codec_map.get(self.negotiated_payload_type, 'UNKNOWN')
-            
+            print(f"Codec Map: {codec_map}")
             if self.negotiated_codec == 'G722':
                 self.logger.info(f"🎵 ✅ G.722 codec negotiated! (PT {self.negotiated_payload_type}) - High quality 16kHz audio")
                 self.audio_sample_rate = 16000  # G.722 uses 16kHz internally
@@ -516,7 +517,10 @@ class SimpleSIPClient:
                         if self.audio_callback_format == 'pcm':
                             pcm_data = self._ulaw_to_pcm(pcmu_data)
                             self.audio_received_callback(pcm_data, 'pcm')
-                        else:
+                        elif self.get_audio_config()['codec'] == 'g722':
+                            g722_data = self._g722_decode(pcmu_data)
+                            self.audio_received_callback(g722_data, 'g722')
+                        elif self.get_audio_config()['codec'] == 'pcmu':
                             self.audio_received_callback(pcmu_data, 'pcmu')
                     except Exception as e:
                         self.logger.error(f"Error in audio callback: {str(e)}")
@@ -577,44 +581,26 @@ class SimpleSIPClient:
     def _g722_encode(self, pcm_data):
         """Encode 16-bit PCM to G.722 format"""
         import numpy as np
+    
+        samples = np.frombuffer(pcm_data, dtype=np.int16)
         
-        pcm_samples = np.frombuffer(pcm_data, dtype=np.int16)
+        downsampled = samples[::2]
         
-        encoded_samples = []
+        quantized = np.clip(downsampled >> 8, -128, 127).astype(np.int8)
         
-        for i in range(0, len(pcm_samples), 2):
-            if i + 1 < len(pcm_samples):
-                sample = (pcm_samples[i] + pcm_samples[i + 1]) // 2
-            else:
-                sample = pcm_samples[i]
-            
-            sample = max(-32768, min(32767, sample))
-            
-            if sample >= 0:
-                compressed = min(127, sample >> 8)
-            else:
-                compressed = max(-128, sample >> 8)
-            
-            encoded_samples.append(compressed & 0xFF)
-        
-        return bytes(encoded_samples)
+        return quantized.tobytes()
     
     def _g722_decode(self, g722_data):
         """Decode G.722 format to 16-bit PCM"""
         import numpy as np
+    
+        quantized = np.frombuffer(g722_data, dtype=np.int8)
         
+        # Expand and upsample
+        expanded = quantized.astype(np.int16) << 8
+        upsampled = np.repeat(expanded, 2)  # 8kHz → 16kHz
         
-        pcm_samples = []
-        
-        for byte in g722_data:
-            if byte & 0x80:  # Negative
-                sample = ((byte & 0x7F) - 128) << 8
-            else:  # Positive
-                sample = byte << 8
-            
-            pcm_samples.extend([sample, sample])
-        
-        return np.array(pcm_samples, dtype=np.int16).tobytes()
+        return upsampled.tobytes()
     
     def _pcm_to_ulaw(self, pcm_data):
         """Convert 16-bit PCM to μ-law format using standard algorithm"""
@@ -726,6 +712,34 @@ class SimpleSIPClient:
             pcm_samples.append(linear)
         
         return np.array(pcm_samples, dtype=np.int16).tobytes()
+
+    def get_audio_config(self):
+        """Get audio configuration based on negotiated codec"""
+        codec = self.negotiated_codec or 'PCMU'
+        payload_type = self.negotiated_payload_type or 0
+        
+        if codec == 'G722':
+            return {
+                'codec': codec,
+                'payload_type': payload_type,
+                'sample_rate': 16000,  # G.722 internal sampling rate
+                'rtp_clock_rate': 8000,  # G.722 RTP clock rate
+                'frame_size': 320,  # 20ms at 16kHz
+                'rtp_frame_size': 160,  # RTP timestamp increment
+                'encoding': 'g722',
+                'chunk_size': 320  # PCM samples per 20ms frame
+            }
+        else:  # PCMU, PCMA
+            return {
+                'codec': codec,
+                'payload_type': payload_type,
+                'sample_rate': 8000,
+                'rtp_clock_rate': 8000,
+                'frame_size': 160,  # 20ms at 8kHz
+                'rtp_frame_size': 160,
+                'encoding': 'pcmu' if codec == 'PCMU' else 'pcma',
+                'chunk_size': 160  # PCM samples per 20ms frame
+            }
 
     def _parse_sip_message(self, message):
         """Parse SIP message headers into a dictionary"""

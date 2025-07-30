@@ -1,0 +1,46 @@
+version: "3.9"
+
+services:
+  issabel:
+    image: technoexpress/issabel-pbx
+    container_name: issabel
+    restart: always
+    hostname: unified.pbx.host
+    cap_add:
+      - NET_ADMIN
+    ports:
+      - "80:880"
+      - "443:4443"
+      - "25:25"
+      - "465:465"
+      - "2122:2122"
+      - "5038:5038"
+      - "5060:5060/tcp"
+      - "5060:5060/udp"
+      - "5061:5061/tcp"
+      - "5061:5061/udp"
+      - "8001:8001"
+      - "8003:8003"
+      - "4445:4445"
+      - "8088:8088"
+      - "8089:8089"
+      - "9900:9900/tcp"
+      - "9900:9900/udp"
+      - "10000-10100:10000-10100/tcp"
+      - "10000-10100:10000-10100/udp"
+    volumes:
+      - issabel-etc:/etc
+      - issabel-log:/var/log
+      - issabel-lib:/var/lib
+      - issabel-home:/home
+      - /etc/resolv.conf:/etc/resolv.conf:ro
+    environment:
+      - container=docker
+    network_mode: host
+
+volumes:
+  issabel-etc:
+  issabel-www:
+  issabel-log:
+  issabel-lib:
+  issabel-home:
