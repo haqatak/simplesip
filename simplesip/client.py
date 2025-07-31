@@ -20,11 +20,12 @@ class CallState(Enum):
 
 
 class SimpleSIPClient:
-    def __init__(self, username, password, server, port=5060):
+    def __init__(self, username, password, server, port=5060, call_manager=None):
         self.username = username
         self.password = password
         self.server = server
         self.port = port
+        self.call_manager = call_manager
         self.call_id = None
         self.cseq = 1
         self.tag = str(random.randint(100000, 999999))
@@ -1213,6 +1214,7 @@ class SimpleSIPClient:
         """Enhanced incoming INVITE handling"""
         
         call_id = headers.get('call-id', '')
+        from_uri = headers.get('from', '')
         if call_id:
             self.call_id = call_id
         
@@ -1220,6 +1222,8 @@ class SimpleSIPClient:
             self._parse_sdp_answer(headers['body'])
         
         self.answer_call(headers)
+        if self.call_manager:
+            self.call_manager.on_incoming_call(call_id, from_uri)
         
     def _handle_bye(self, message, headers):
         """Enhanced BYE handling"""
@@ -1235,6 +1239,8 @@ class SimpleSIPClient:
         
         self._cleanup_call_state()
         self.logger.info(f"📴 CALL STATUS: IDLE - Call terminated")
+        if self.call_manager:
+            self.call_manager.on_call_ended(call_id)
 
     def _cleanup_call_state(self):
         """*** NEW: Clean up call state and invite tracking ***"""
