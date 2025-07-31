@@ -1,5 +1,5 @@
 from simplesip import SimpleSIPClient
-from voice_agent import VoiceAgent
+from call_manager import CallManager
 import time
 
 # --- SIP Configuration ---
@@ -17,14 +17,18 @@ def main():
         # Initialize the SIP client
         client = SimpleSIPClient(USERNAME, PASSWORD, SERVER)
 
-        # Initialize the Voice Agent
-        agent = VoiceAgent(client)
+        # Initialize the Call Manager
+        call_manager = CallManager(client)
+
+        # Set the call manager for the client
+        client.call_manager = call_manager
 
         # Connect to the SIP server
         client.connect()
 
-        # Start the voice agent
-        agent.start()
+        # Keep the main thread alive
+        while True:
+            time.sleep(1)
 
     except KeyboardInterrupt:
         print("\n🛑 Shutting down...")

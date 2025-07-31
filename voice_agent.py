@@ -18,7 +18,3 @@ class VoiceAgent:
     def start(self):
         """Starts the voice agent."""
         print("Voice agent started.")
-        # In a real application, you might have a loop here to handle
-        # the conversation with the LLM.
-        while self.sip_client.running:
-            time.sleep(1)
