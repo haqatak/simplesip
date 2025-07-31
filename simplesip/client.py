@@ -1219,13 +1219,7 @@ class SimpleSIPClient:
         if 'body' in headers:
             self._parse_sdp_answer(headers['body'])
         
-        additional_headers = {
-            'User-Agent': 'BetterSIPClient/1.0',
-            'Contact': f'<sip:{self.username}@{self.local_ip}:5060>'
-        }
-        self._send_response(headers, 180, 'Ringing', additional_headers)
-        
-        threading.Timer(2.0, lambda: self.answer_call(headers)).start()
+        self.answer_call(headers)
         
     def _handle_bye(self, message, headers):
         """Enhanced BYE handling"""
