@@ -840,59 +840,6 @@ class SimpleSIPClient:
         }
         
         self._send_response(request_headers, 200, 'OK', additional_headers, sdp_body)
-    
-    def make_call(self, dest_number):
-        """*** FIXED: Initiate a call with duplicate prevention ***"""
-        if self.invite_in_progress:
-            return
-            
-        if self.call_id and self.call_state != CallState.IDLE:
-            return
-        
-        self.call_id = f"{random.randint(100000, 999999)}@{self.local_ip}"
-        invite_key = f"{self.call_id}:{dest_number}"
-        
-        if invite_key in self.sent_invites:
-                return
-        
-        self.invite_in_progress = True
-        self.sent_invites.add(invite_key)
-        
-        self.last_invite_time = datetime.now()
-        
-        branch = self._generate_branch()
-        sdp_body = self._generate_sdp_offer()
-        
-        msg = f"INVITE sip:{dest_number}@{self.server} SIP/2.0\r\n" \
-              f"Via: SIP/2.0/UDP {self.local_ip}:5060;branch={branch};rport\r\n" \
-              f"Max-Forwards: 70\r\n" \
-              f"From: <sip:{self.username}@{self.server}>;tag={self.tag}\r\n" \
-              f"To: <sip:{dest_number}@{self.server}>\r\n" \
-              f"Call-ID: {self.call_id}\r\n" \
-              f"CSeq: {self.cseq} INVITE\r\n" \
-              f"Contact: <sip:{self.username}@{self.local_ip}:5060>\r\n" \
-              f"Allow: INVITE, ACK, CANCEL, OPTIONS, BYE, REFER, NOTIFY, MESSAGE, SUBSCRIBE, INFO\r\n" \
-              f"User-Agent: BetterSIPClient/1.0\r\n" \
-              f"Supported: replaces, timer\r\n" \
-              f"Content-Type: application/sdp\r\n" \
-              f"Content-Length: {len(sdp_body)}\r\n\r\n" \
-              f"{sdp_body}"
-        
-        self.current_transactions[self.call_id] = {
-            'type': 'INVITE',
-            'start_time': datetime.now(),
-            'branch': branch,
-            'dest_number': dest_number,
-            'retries': 0,
-            'cseq': self.cseq,
-            'invite_key': invite_key,
-            'headers': self._parse_sip_message(msg)
-        }
-        
-        self._send_message(msg)
-        self.cseq += 1
-        self.call_state = CallState.INVITING
-        self.logger.info(f"📞 CALL STATUS: INVITED - Call to {dest_number} initiated")
 
     def _handle_401_unauthorized(self, message):
         """Handle 401 Unauthorized response with better parsing"""
@@ -923,11 +870,7 @@ class SimpleSIPClient:
         
         if call_id in self.current_transactions:
             transaction = self.current_transactions[call_id]
-            if transaction['type'] == 'INVITE':
-                if 'invite_key' in transaction:
-                    self.sent_invites.discard(transaction['invite_key'])
-                self._retry_invite_with_auth(transaction['dest_number'], call_id)
-            elif transaction['type'] == 'REGISTER':
+            if transaction['type'] == 'REGISTER':
                 self._retry_register_with_auth(call_id)
 
     def _calculate_auth_response(self, method, uri):
@@ -953,58 +896,6 @@ class SimpleSIPClient:
             ).hexdigest()
         
         return response
-
-    def _retry_invite_with_auth(self, dest_number, call_id):
-        """Retry INVITE with authentication"""
-        if not self.auth_info:
-            self.logger.error("No auth info available for retry")
-            return
-            
-        branch = self._generate_branch()
-        uri = f"sip:{dest_number}@{self.server}"
-        response = self._calculate_auth_response("INVITE", uri)
-        
-        if not response:
-            self.logger.error("Failed to calculate auth response")
-            return
-        
-        sdp_body = self._generate_sdp_offer()
-        
-        auth_header = f'Digest username="{self.username}", realm="{self.auth_info["realm"]}", ' \
-                     f'nonce="{self.auth_info["nonce"]}", uri="{uri}", ' \
-                     f'response="{response}", algorithm={self.auth_info["algorithm"]}'
-        
-        if self.auth_info.get('opaque'):
-            auth_header += f', opaque="{self.auth_info["opaque"]}"'
-        
-        if self.auth_info.get('qop'):
-            nc = "00000001"
-            cnonce = hashlib.md5(str(time.time()).encode()).hexdigest()[:8]
-            auth_header += f', qop={self.auth_info["qop"]}, nc={nc}, cnonce="{cnonce}"'
-        
-        msg = f"INVITE {uri} SIP/2.0\r\n" \
-              f"Via: SIP/2.0/UDP {self.local_ip}:5060;branch={branch};rport\r\n" \
-              f"Max-Forwards: 70\r\n" \
-              f"From: <sip:{self.username}@{self.server}>;tag={self.tag}\r\n" \
-              f"To: <sip:{dest_number}@{self.server}>\r\n" \
-              f"Call-ID: {call_id}\r\n" \
-              f"CSeq: {self.cseq} INVITE\r\n" \
-              f"Contact: <sip:{self.username}@{self.local_ip}:5060>\r\n" \
-              f"Authorization: {auth_header}\r\n" \
-              f"User-Agent: BetterSIPClient/1.0\r\n" \
-              f"Content-Type: application/sdp\r\n" \
-              f"Content-Length: {len(sdp_body)}\r\n\r\n" \
-              f"{sdp_body}"
-        
-        invite_key_auth = f"{call_id}:{dest_number}:auth"
-        self.sent_invites.add(invite_key_auth)
-        
-        self.current_transactions[call_id]['retries'] = 1
-        self.current_transactions[call_id]['branch'] = branch
-        self.current_transactions[call_id]['invite_key'] = invite_key_auth
-        
-        self._send_message(msg)
-        self.cseq += 1
 
     def _retry_register_with_auth(self, call_id):
         """Retry REGISTER with authentication"""
@@ -1278,17 +1169,7 @@ class SimpleSIPClient:
                 if elapsed > interval and transaction['retries'] == i:
                     transaction['retries'] = i + 1
                     
-                    if transaction['type'] == 'INVITE':
-                        if self.call_state in [CallState.RINGING, CallState.CONNECTED, CallState.STREAMING]:
-                            continue  # Stop retransmissions once we get ringing
-                            
-                        if not self.auth_info and not self.invite_in_progress:
-                            if 'invite_key' in transaction:
-                                self.sent_invites.discard(transaction['invite_key'])
-                            self.make_call(transaction['dest_number'])
-                        elif self.auth_info:
-                            self._retry_invite_with_auth(transaction['dest_number'], call_id)
-                    elif transaction['type'] == 'REGISTER':
+                    if transaction['type'] == 'REGISTER':
                         if self.auth_info:
                             self._retry_register_with_auth(call_id)
                         else:
